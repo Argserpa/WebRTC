@@ -1,5 +1,5 @@
 # WebRTC
-Servidor de medios con Nginx  WebRTC
+servidor de medios con WebRTC
 
 ## 1. Construir la imagen de Docker
 ``` bash
