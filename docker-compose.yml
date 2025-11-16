@@ -1,0 +1,44 @@
+services:
+  streamer:
+    build: ./streamer
+    container_name: video-streamer
+    privileged: true
+    devices:
+      - "/dev/video0:/dev/video0"# optional on Linux; remove on mac/win
+      - "/dev/video1:/dev/video1"
+    environment:
+      - INPUT=${INPUT:-/dev/video}        # device, file, or rtsp URL
+      - USE_NVENC=${USE_NVENC:-true}       # true/false
+      - HLS_DIR=/hls
+      - RECORD_DIR=/recordings
+      - UDP_PORT=10000
+      - VIDEO_SCALE=${VIDEO_SCALE:-1280:720}
+    volumes:
+      - hls-data:/hls
+      - recordings:/recordings
+    ports:
+      - "8081:8081"   # WebRTC signaling (aiortc) /offer endpoint
+    deploy:
+      restart_policy:
+        condition: any
+
+    # Use this when you have NVIDIA container toolkit installed:
+    #runtime: nvidia
+    #environment:
+    #  - NVIDIA_VISIBLE_DEVICES=all
+
+  web:
+    image: nginx:stable
+    container_name: hls-web
+    depends_on:
+      - streamer
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+      - hls-data:/var/www/hls
+
+volumes:
+  hls-data:
+  recordings:

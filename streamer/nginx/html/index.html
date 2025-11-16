@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>HLS Live</title>
+    <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet" />
+</head>
+<body>
+<h1 style="text-align:center">HLS Live Stream</h1>
+<video id="hlsplayer" class="video-js vjs-default-skin" controls autoplay width="800" height="450">
+    <source src="/hls/index.m3u8" type="application/x-mpegURL">
+</video>
+<p style="text-align:center"><a href="/webrtc.html">Open low-latency WebRTC viewer</a></p>
+<script src="https://unpkg.com/video.js/dist/video.js"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>WebRTC Viewer</title>
+</head>
+<body>
+<h1 style="text-align:center">WebRTC Live Viewer</h1>
+<video id="video" autoplay playsinline controls style="width:80%;height:auto;margin:0 auto;display:block;"></video>
+<script>
+    async function init() {
+        // Create local RTCPeerConnection
+        const pc = new RTCPeerConnection();
+        const el = document.getElementById('video');
+        pc.ontrack = (evt) => {
+            if (el.srcObject !== evt.streams[0]) {
+                el.srcObject = evt.streams[0];
+            }
+        };
+
+        // Create offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // Send offer to signaling server (streamer)
+        const resp = await fetch('http://'+location.hostname+':8081/offer', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})
+        });
+        const answer = await resp.json();
+        await pc.setRemoteDescription(answer);
+    }
+
+    init().catch(e => { console.error(e); alert('WebRTC init failed: '+e); });
+</script>
+</body>
+</html>
