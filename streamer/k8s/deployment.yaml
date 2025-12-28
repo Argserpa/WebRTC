@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-streamer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: video-streamer
+  template:
+    metadata:
+      labels:
+        app: video-streamer
+    spec:
+      containers:
+        - name: video-streamer
+          image: argserpa/video-streamer:latest
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: video0
+              mountPath: /dev/video0
+      volumes:
+        - name: video0
+          hostPath:
+            path: /dev/video0
+            type: CharDevice
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: video-streamer
+spec:
+  type: NodePort
+  selector:
+    app: video-streamer
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080

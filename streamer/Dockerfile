@@ -16,12 +16,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libavfilter-dev \
     libswscale-dev \
     libswresample-dev \
+    v4l-utils \
+    libv4l-0 \
+    libv4l-dev \
+    v4l-utils \
+    libv4l-0t64 \
+    libv4l2rds0t64 \
+    libv4lconvert0t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install compatible versions of setuptools and Cython
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir --only-binary av av==16.0.0
 #RUN pip install --no-cache-dir "cython<3.0" "setuptools<65"
+RUN pip install --no-cache-dir aiohttp aiortc numpy opencv-python-headless
 
 # Copy requirements
 COPY requirements.txt /app/requirements.txt

@@ -8,7 +8,7 @@ services:
       - "/dev/video1:/dev/video1"
     environment:
       - INPUT=${INPUT:-/dev/video}        # device, file, or rtsp URL
-      - USE_NVENC=${USE_NVENC:-true}       # true/false
+      - USE_NVENC=${USE_NVENC:-false}       # true/false
       - HLS_DIR=/hls
       - RECORD_DIR=/recordings
       - UDP_PORT=10000
