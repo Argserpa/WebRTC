@@ -2,14 +2,14 @@
 import os
 import asyncio
 import shlex
-import time
-import json
 from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
-from aiortc.contrib.media import MediaPlayer
 
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.contrib.media import MediaPlayer, MediaRelay
+
+# ================== ENV ==================
 INPUT = os.getenv("INPUT", "/dev/video0")
-USE_NVENC = os.getenv("USE_NVENC", "true").lower() in ("1", "true", "yes")
+USE_NVENC = os.getenv("USE_NVENC", "false").lower() in ("1", "true", "yes")
 HLS_DIR = os.getenv("HLS_DIR", "/hls")
 RECORD_DIR = os.getenv("RECORD_DIR", "/recordings")
 UDP_PORT = int(os.getenv("UDP_PORT", "10000"))
@@ -20,123 +20,153 @@ os.makedirs(RECORD_DIR, exist_ok=True)
 
 FFMPEG_LOOP_RESTART_DELAY = 2
 
-def build_ffmpeg_cmd():
-    # choose encoder
+
+
+# ================== FFMPEG ==================
+
+def pick_encoder():
     if USE_NVENC:
-        codec = "h264_nvenc"
-        scale_filter = f"scale_cuda={SCALE}"
-        preset = "p1"
-    else:
-        codec = "libx264"
-        scale_filter = f"scale={SCALE}"
-        preset = "veryfast"
+        return {
+            "codec": "h264_nvenc",
+            "pix_fmt": "yuv420p",
+            "scale": "scale",
+            "extra": ""
+        }
+    return {
+        "codec": "libx264",
+        "pix_fmt": "yuv420p",
+        "scale": "scale",
+        "extra": ""
+    }
 
-    # Use tee muxer to write HLS, MP4 (timestamped) and UDP mpegts for local WebRTC reader.
-    # Use bash -lc to let $(date +%s) expand in recording filename.
-    hls_path = f"{HLS_DIR}/index.m3u8"
-    recordings_pattern = f"{RECORD_DIR}/recording-$(date +%s).mp4"
-    udp_target = f"udp://127.0.0.1:{UDP_PORT}"
 
-    tee_outputs = (
-        f"[f=hls:hls_time=2:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
-        f"|[f=mp4]{recordings_pattern}"
-        f"|[f=mpegts]{udp_target}"
+def v4l2_input(dev):
+    return (
+        f"-f v4l2 "
+        f"-input_format yuyv422 "
+        f"-video_size 1280x720 "
+        f"-framerate 10 "
+        f"-i {shlex.quote(dev)}"
     )
 
-    # If the input is a device (v4l2) use -f v4l2, if rtsp or file rely on auto-detect
+def build_ffmpeg_cmd():
+    enc = pick_encoder()
+
     if INPUT.startswith("/dev/"):
-        input_opts = f"-f v4l2 -i {shlex.quote(INPUT)}"
+        input_opts = v4l2_input(INPUT)
     else:
         input_opts = f"-re -i {shlex.quote(INPUT)}"
 
-    ffmpeg_cmd = (
-        f"ffmpeg -hide_banner -y {input_opts} "
-        f"-vf \"{scale_filter}\" "
-        f"-c:v {codec} -preset {preset} -g 50 -b:v 4000k "
-        f"-f tee -map 0:v \"{tee_outputs}\""
+    scale_filter = f"{enc['scale']}={SCALE}"
+    hls_path = f"{HLS_DIR}/index.m3u8"
+    udp_target = f"udp://127.0.0.1:{UDP_PORT}?pkt_size=1316"
+
+    tee = (
+        f"[f=hls:hls_time=2:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
+        f"|[f=mpegts]{udp_target}"
     )
-    return ffmpeg_cmd
+
+    return (
+        f"ffmpeg -hide_banner -loglevel error -y "
+        f"{input_opts} "
+        f"-vf \"{scale_filter}\" "
+        f"-pix_fmt {enc['pix_fmt']} "
+        f"-c:v {enc['codec']} {enc['extra']} "
+        f"-preset veryfast -g 50 -b:v 4000k "
+        f"-f tee -map 0:v \"{tee}\""
+    )
 
 async def ffmpeg_runner():
     while True:
         cmd = build_ffmpeg_cmd()
-        print("Launching ffmpeg with command:")
+        print("Launching ffmpeg:")
         print(cmd)
-        # run under shell (bash -lc) so tee & date expansion works
         proc = await asyncio.create_subprocess_shell(cmd)
         await proc.wait()
-        print(f"ffmpeg exited with {proc.returncode}. Restarting in {FFMPEG_LOOP_RESTART_DELAY}s...")
+        print(f"ffmpeg exited ({proc.returncode}), restarting in {FFMPEG_LOOP_RESTART_DELAY}s")
         await asyncio.sleep(FFMPEG_LOOP_RESTART_DELAY)
 
-# ---------- WebRTC signaling server ----------
+# ================== WEBRTC ==================
 pcs = set()
+player = None
+relay = MediaRelay()
 
 async def offer(request):
     params = await request.json()
-    sdp = params["sdp"]
-    type_ = params["type"]
-    offer = RTCSessionDescription(sdp=sdp, type=type_)
+    offer = RTCSessionDescription(
+        sdp=params["sdp"],
+        type=params["type"]
+    )
 
     pc = RTCPeerConnection()
     pcs.add(pc)
 
-    # For cleanup: close after peer disconnect
     @pc.on("connectionstatechange")
     async def on_connstatechange():
-        print("Connection state is", pc.connectionState)
-        if pc.connectionState == "failed" or pc.connectionState == "closed":
+        print("Connection state:", pc.connectionState)
+        if pc.connectionState in ("failed", "closed"):
             await pc.close()
             pcs.discard(pc)
 
-    # Create a MediaPlayer that reads the UDP mpegts stream
-    # Use av/ffmpeg to open udp
-    player = MediaPlayer(f"udp://127.0.0.1:{UDP_PORT}", format="mpegts", options={"stimeout": "5000000"})
+    # ---- ADD TRACKS BEFORE ANSWER (CRITICAL FIX) ----
 
-    # Add tracks from the player (video/audio if present)
-    if player.video:
-        pc.addTrack(player.video)
-    if player.audio:
-        pc.addTrack(player.audio)
+    if player and player.video:
+        pc.addTrack(relay.subscribe(player.video))
+    else:
+        print("⚠️ No video track available yet")
+    if player and player.audio:
+        pc.addTrack(relay.subscribe(player.audio))
+    else:
+        print("⚠️ No audio track available")
 
     await pc.setRemoteDescription(offer)
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
-    print("Created answer, returning to client")
-    return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+    return web.json_response({
+        "sdp": pc.localDescription.sdp,
+        "type": pc.localDescription.type
+    })
 
 async def on_shutdown(app):
-    coros = [pc.close() for pc in pcs]
-    await asyncio.gather(*coros)
-    print("Closed peer connections")
+    await asyncio.gather(*[pc.close() for pc in pcs])
+    pcs.clear()
+    print("All peer connections closed")
 
+# ================== HTTP APP ==================
 async def init_app():
     app = web.Application()
     app.router.add_post("/offer", offer)
-    app.on_shutdown.append(on_shutdown)
-    # Basic CORS preflight support
+
     async def options_handler(request):
         return web.Response(headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
         })
+
     app.router.add_route("OPTIONS", "/offer", options_handler)
+    app.on_shutdown.append(on_shutdown)
     return app
 
+# ================== MAIN ==================
 async def main():
-    # start ffmpeg runner in background
-    ffmpeg_task = asyncio.create_task(ffmpeg_runner())
+    asyncio.create_task(ffmpeg_runner())
+    await asyncio.sleep(2)
 
-    # start aiohttp server for WebRTC signaling
+    global player
+    player = MediaPlayer(
+        f"udp://127.0.0.1:{UDP_PORT}?overrun_nonfatal=1&fifo_size=5000000",
+        format="mpegts"
+    )
     app = await init_app()
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 8081)
     await site.start()
-    print("Signaling server running on :8081")
 
-    await ffmpeg_task  # normally runs forever
+    print("WebRTC signaling server running on http://0.0.0.0:8081")
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:

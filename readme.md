@@ -6,15 +6,16 @@ servidor de medios con WebRTC
     docker compose build
 ```
 ``` bash
-    docker compose up
+    docker compose up --build
 ```
 ``` bash
     docker compose down
 ```
 
 ``` bash
-    docker run -d -p 8081 --name video-streamer video-streamer && docker logs -f video-streamer
+    docker compose down && docker compose up && docker logs -f video-streamer
 ```
+
 # copiar ficheros desde la imagen
 ``` bash
     docker cp video-streamer:/hls .

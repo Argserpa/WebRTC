@@ -4,11 +4,28 @@
     <meta charset="utf-8"/>
     <title>HLS Live</title>
     <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet" />
+    <link rel="icon" href="/images/favicon.png" type="image/x-icon"/>
 </head>
 <body>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
+<video id="video" controls autoplay muted></video>
+
+<script>
+    const video = document.getElementById('video');
+    const src = '/hls/index.m3u8';
+
+    if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(src);
+        hls.attachMedia(video);
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+    }
+</script>
 <h1 style="text-align:center">HLS Live Stream</h1>
 <video id="hlsplayer" class="video-js vjs-default-skin" controls autoplay width="800" height="450">
-    <source src="/hls/index.m3u8" type="application/x-mpegURL">
+    <source src="/hls/index.m3u8">
 </video>
 <p style="text-align:center"><a href="/webrtc.html">Open low-latency WebRTC viewer</a></p>
 <script src="https://unpkg.com/video.js/dist/video.js"></script>
