@@ -9,12 +9,12 @@ services:
     environment:
       - INPUT=${INPUT:-/dev/video}        # device, file, or rtsp URL
       - USE_NVENC=${USE_NVENC:-false}       # true/false
-      - HLS_DIR=/hls
+      - HLS_DIR=/var/www/hls
       - RECORD_DIR=/recordings
       - UDP_PORT=10000
       - VIDEO_SCALE=${VIDEO_SCALE:-1280:720}
     volumes:
-      - hls-data:/hls
+      - hls-data:/var/www/hls
       - recordings:/recordings
     ports:
       - "8081:8081"   # WebRTC signaling (aiortc) /offer endpoint
@@ -28,7 +28,7 @@ services:
     #  - NVIDIA_VISIBLE_DEVICES=all
 
   web:
-    image: nginx:stable
+    build: ./nginx
     container_name: hls-web
     depends_on:
       - streamer

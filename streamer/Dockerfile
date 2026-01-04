@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir aiohttp aiortc numpy opencv-python-headless
 COPY requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-#RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy application code
 COPY . /app/

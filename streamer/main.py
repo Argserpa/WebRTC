@@ -2,8 +2,8 @@
 import os
 import asyncio
 import shlex
+import aiohttp_cors
 from aiohttp import web
-
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 
@@ -20,27 +20,15 @@ os.makedirs(RECORD_DIR, exist_ok=True)
 
 FFMPEG_LOOP_RESTART_DELAY = 2
 
-
-
 # ================== FFMPEG ==================
-
 def pick_encoder():
+    """Devuelve el codec y opciones según USE_NVENC"""
     if USE_NVENC:
-        return {
-            "codec": "h264_nvenc",
-            "pix_fmt": "yuv420p",
-            "scale": "scale",
-            "extra": ""
-        }
-    return {
-        "codec": "libx264",
-        "pix_fmt": "yuv420p",
-        "scale": "scale",
-        "extra": ""
-    }
-
+        return {"codec": "h264_nvenc", "pix_fmt": "yuv420p", "scale": "scale", "extra": ""}
+    return {"codec": "libx264", "pix_fmt": "yuv420p", "scale": "scale", "extra": ""}
 
 def v4l2_input(dev):
+    """Opciones básicas para cámara V4L2"""
     return (
         f"-f v4l2 "
         f"-input_format yuyv422 "
@@ -51,7 +39,6 @@ def v4l2_input(dev):
 
 def build_ffmpeg_cmd():
     enc = pick_encoder()
-
     if INPUT.startswith("/dev/"):
         input_opts = v4l2_input(INPUT)
     else:
@@ -59,15 +46,15 @@ def build_ffmpeg_cmd():
 
     scale_filter = f"{enc['scale']}={SCALE}"
     hls_path = f"{HLS_DIR}/index.m3u8"
-    udp_target = f"udp://127.0.0.1:{UDP_PORT}?pkt_size=1316"
+    udp_target = f"udp://127.0.0.1:{UDP_PORT}"
 
     tee = (
         f"[f=hls:hls_time=2:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
         f"|[f=mpegts]{udp_target}"
     )
 
-    return (
-        f"ffmpeg -hide_banner -loglevel error -y "
+    cmd = (
+        f"ffmpeg -hide_banner -loglevel warning -y "
         f"{input_opts} "
         f"-vf \"{scale_filter}\" "
         f"-pix_fmt {enc['pix_fmt']} "
@@ -75,51 +62,67 @@ def build_ffmpeg_cmd():
         f"-preset veryfast -g 50 -b:v 4000k "
         f"-f tee -map 0:v \"{tee}\""
     )
+    return cmd
 
 async def ffmpeg_runner():
     while True:
         cmd = build_ffmpeg_cmd()
-        print("Launching ffmpeg:")
-        print(cmd)
+        print("Launching ffmpeg:\n", cmd)
         proc = await asyncio.create_subprocess_shell(cmd)
         await proc.wait()
-        print(f"ffmpeg exited ({proc.returncode}), restarting in {FFMPEG_LOOP_RESTART_DELAY}s")
+        print(f"ffmpeg exited ({proc.returncode}), restarting in {FFMPEG_LOOP_RESTART_DELAY}s...")
         await asyncio.sleep(FFMPEG_LOOP_RESTART_DELAY)
 
 # ================== WEBRTC ==================
 pcs = set()
 player = None
-relay = MediaRelay()
+relay = None
 
 async def offer(request):
+    global player, relay
     params = await request.json()
-    offer = RTCSessionDescription(
-        sdp=params["sdp"],
-        type=params["type"]
-    )
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
     pc = RTCPeerConnection()
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
     async def on_connstatechange():
-        print("Connection state:", pc.connectionState)
         if pc.connectionState in ("failed", "closed"):
             await pc.close()
             pcs.discard(pc)
 
-    # ---- ADD TRACKS BEFORE ANSWER (CRITICAL FIX) ----
+    # --- Espera a que los tracks estén listos ---
+    for _ in range(20):
+        if player.video is not None:
+            break
+        await asyncio.sleep(0.2)
 
-    if player and player.video:
+    # --- Añade tracks SOLO si existen ---
+    if player.video is not None:
         pc.addTrack(relay.subscribe(player.video))
-    else:
-        print("⚠️ No video track available yet")
-    if player and player.audio:
+    if player.audio is not None:
         pc.addTrack(relay.subscribe(player.audio))
-    else:
-        print("⚠️ No audio track available")
 
+    # --- Remote -> Local ---
     await pc.setRemoteDescription(offer)
+
+    # --- SOLUCIÓN: Validar direcciones de transceivers ---
+    for transceiver in pc.getTransceivers():
+        if transceiver.kind == "video":
+            if player.video is None:
+                # Si el cliente pide video pero no tenemos track, lo desactivamos
+                transceiver.direction = "inactive"
+            else:
+                # Si tenemos video, nos aseguramos que sea solo envío (o lo que necesites)
+                transceiver.direction = "sendonly"
+
+        if transceiver.kind == "audio":
+            if player.audio is None:
+                transceiver.direction = "inactive"
+            else:
+                transceiver.direction = "sendonly"
+
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
@@ -138,27 +141,36 @@ async def init_app():
     app = web.Application()
     app.router.add_post("/offer", offer)
 
-    async def options_handler(request):
-        return web.Response(headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-        })
+    # Configura CORS para TODAS las rutas automáticamente
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        )
+    })
 
-    app.router.add_route("OPTIONS", "/offer", options_handler)
+    # Añade CORS a todas las rutas registradas
+    for route in list(app.router.routes()):
+        cors.add(route)
+
     app.on_shutdown.append(on_shutdown)
     return app
 
 # ================== MAIN ==================
 async def main():
+    # iniciar FFmpeg en background
     asyncio.create_task(ffmpeg_runner())
-    await asyncio.sleep(2)
+    await asyncio.sleep(2)  # dar tiempo a FFmpeg para abrir UDP
 
-    global player
+    global player, relay
     player = MediaPlayer(
-        f"udp://127.0.0.1:{UDP_PORT}?overrun_nonfatal=1&fifo_size=5000000",
-        format="mpegts"
+        f"udp://127.0.0.1:{UDP_PORT}",
+        format="mpegts",
+        options={"stimeout": "5000000"}
     )
+    relay = MediaRelay()
+
     app = await init_app()
     runner = web.AppRunner(app)
     await runner.setup()

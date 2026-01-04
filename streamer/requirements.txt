@@ -1,5 +1,5 @@
-aiortc==1.5.0
-av==9.2.0
 numpy
 aiohttp
 opencv-python-headless
+aiohttp==3.8.5
+aiohttp_cors==0.7.0

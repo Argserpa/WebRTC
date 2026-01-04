@@ -2,38 +2,60 @@
 <html>
 <head>
     <meta charset="utf-8"/>
-    <title>WebRTC Viewer</title>
+    <title>WebRTC Live Viewer</title>
     <link rel="icon" href="/images/favicon.png" type="image/x-icon"/>
 </head>
 <body>
 <h1 style="text-align:center">WebRTC Live Viewer</h1>
 <video id="video" autoplay playsinline controls style="width:80%;height:auto;margin:0 auto;display:block;"></video>
+
 <script>
-    async function init() {
-        // Create local RTCPeerConnection
-        const pc = new RTCPeerConnection();
-        const el = document.getElementById('video');
-        pc.ontrack = (evt) => {
-            if (el.srcObject !== evt.streams[0]) {
-                el.srcObject = evt.streams[0];
+    async function initWebRTC() {
+        const pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: "stun:stun.l.google.com:19302" }
+            ]
+        });
+
+        const videoEl = document.getElementById('video');
+
+        // Receive tracks from streamer
+        pc.ontrack = (event) => {
+            if (videoEl.srcObject !== event.streams[0]) {
+                videoEl.srcObject = event.streams[0];
             }
         };
 
+        // Viewer is receive-only: no microphone/camera tracks sent
+        // Create data channel if needed for signaling (optional)
+        // const dc = pc.createDataChannel("chat");
+
         // Create offer
-        const offer = await pc.createOffer();
+        const offer = await pc.createOffer({offerToReceiveVideo: true, offerToReceiveAudio: true});
         await pc.setLocalDescription(offer);
 
-        // Send offer to signaling server (streamer)
-        const resp = await fetch('http://'+location.hostname+':8081/offer', {
+        // Send offer to signaling server
+        const resp = await fetch(`http://${location.hostname}:8081/offer`, {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})
         });
+
+        if (!resp.ok) throw new Error('Failed to get answer from server');
+
         const answer = await resp.json();
         await pc.setRemoteDescription(answer);
+
+        console.log("WebRTC connected!");
     }
 
-    init().catch(e => { console.error(e); alert('WebRTC init failed: '+e); });
+    // Initialize and catch errors
+    initWebRTC().catch(e => {
+        console.error(e);
+        alert("WebRTC init failed: " + e);
+    });
 </script>
+<p style="text-align:center"><a href="/">Back to main</a></p>
+
 </body>
 </html>
