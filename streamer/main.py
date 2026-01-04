@@ -13,7 +13,8 @@ USE_NVENC = os.getenv("USE_NVENC", "false").lower() in ("1", "true", "yes")
 HLS_DIR = os.getenv("HLS_DIR", "/hls")
 RECORD_DIR = os.getenv("RECORD_DIR", "/recordings")
 UDP_PORT = int(os.getenv("UDP_PORT", "10000"))
-SCALE = os.getenv("VIDEO_SCALE", "1280:720")
+#SCALE = os.getenv("VIDEO_SCALE", "1280:720")
+SCALE = os.getenv("VIDEO_SCALE", "640:360")
 
 os.makedirs(HLS_DIR, exist_ok=True)
 os.makedirs(RECORD_DIR, exist_ok=True)
@@ -59,8 +60,17 @@ def build_ffmpeg_cmd():
         f"-vf \"{scale_filter}\" "
         f"-pix_fmt {enc['pix_fmt']} "
         f"-c:v {enc['codec']} {enc['extra']} "
-        f"-preset veryfast -g 50 -b:v 4000k "
-        f"-f tee -map 0:v \"{tee}\""
+        f"-preset ultrafast -tune zerolatency -g 30 -b:v 4000k "
+        f"-bf 0 -probesize 32 -f tee -map 0:v \"{tee}\""
+        '''
+        cmd = (
+    f"ffmpeg -hide_banner -loglevel warning -y "
+    f"{input_opts} "
+    f"-vf \"{scale_filter}\" "
+    f"-pix_fmt {enc['pix_fmt']} "
+    f"-c:v libx264 -preset ultrafast -tune zerolatency "
+    f"-f tee -map 0:v \"{tee}\""
+        '''
     )
     return cmd
 
@@ -79,7 +89,6 @@ player = None
 relay = None
 
 async def offer(request):
-    global player, relay
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
@@ -88,48 +97,22 @@ async def offer(request):
 
     @pc.on("connectionstatechange")
     async def on_connstatechange():
-        if pc.connectionState in ("failed", "closed"):
+        if pc.connectionState in ("failed","closed"):
             await pc.close()
             pcs.discard(pc)
 
-    # --- Espera a que los tracks estén listos ---
-    for _ in range(20):
-        if player.video is not None:
-            break
-        await asyncio.sleep(0.2)
-
-    # --- Añade tracks SOLO si existen ---
-    if player.video is not None:
+    # Suscribirse al flujo relay para que todos los viewers vean lo mismo
+    if player.video:
         pc.addTrack(relay.subscribe(player.video))
-    if player.audio is not None:
+    if player.audio:
         pc.addTrack(relay.subscribe(player.audio))
 
-    # --- Remote -> Local ---
     await pc.setRemoteDescription(offer)
-
-    # --- SOLUCIÓN: Validar direcciones de transceivers ---
-    for transceiver in pc.getTransceivers():
-        if transceiver.kind == "video":
-            if player.video is None:
-                # Si el cliente pide video pero no tenemos track, lo desactivamos
-                transceiver.direction = "inactive"
-            else:
-                # Si tenemos video, nos aseguramos que sea solo envío (o lo que necesites)
-                transceiver.direction = "sendonly"
-
-        if transceiver.kind == "audio":
-            if player.audio is None:
-                transceiver.direction = "inactive"
-            else:
-                transceiver.direction = "sendonly"
-
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
-    return web.json_response({
-        "sdp": pc.localDescription.sdp,
-        "type": pc.localDescription.type
-    })
+    return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+
 
 async def on_shutdown(app):
     await asyncio.gather(*[pc.close() for pc in pcs])
