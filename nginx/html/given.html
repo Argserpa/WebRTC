@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Live Streaming</title>
+    <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet"/>
+    <link rel="icon" href="/images/favicon.png" type="image/x-icon"/>
+</head>
+
+<body>
+<h1 style="text-align:center">HLS Live Stream (High latency)</h1>
+
+<!-- ================= HLS PLAYER ================= -->
+<<video id="hlsplayer"
+        controls
+        width="800"
+        height="450"
+        style="display:block;margin:0 auto;">
+</video>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+    const video = document.getElementById('hlsplayer');
+
+    if (Hls.isSupported()) {
+        const hls = new Hls({
+            lowLatencyMode: true,
+            backBufferLength: 30
+        });
+        hls.loadSource('/hls/index.m3u8');
+        hls.attachMedia(video);
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari only
+        video.src = '/hls/index.m3u8';
+    }
+</script>
+
+
+<hr/>
+
+<h1 style="text-align:center">WebRTC Live Stream (Low latency)</h1>
+
+<!-- ================= WEBRTC PLAYER ================= -->
+<video id="webrtcVideo"
+       autoplay
+       playsinline
+       controls
+       style="width:80%;display:block;margin:0 auto;">
+</video>
+
+<p style="text-align:center">
+    ⚠️ Click once on the page to enable audio
+</p>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://unpkg.com/video.js/dist/video.js"></script>
+
+<script>
+    /* ================= HLS ================= */
+    if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource('/hls/index.m3u8');
+        hls.attachMedia(document.getElementById('hlsplayer'));
+    }
+
+    /* ================= WEBRTC ================= */
+    let pc;
+
+    async function initWebRTC() {
+        pc = new RTCPeerConnection({
+            sdpSemantics: "unified-plan"
+        });
+
+        const video = document.getElementById("webrtcVideo");
+
+        pc.ontrack = (event) => {
+            if (!video.srcObject) {
+                video.srcObject = event.streams[0];
+                video.muted = false;
+                video.volume = 1.0;
+                console.log("WebRTC media attached");
+            }
+        };
+
+        pc.addTransceiver("audio", { direction: "recvonly" });
+        pc.addTransceiver("video", { direction: "recvonly" });
+
+        const offer = await pc.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+        });
+
+        await pc.setLocalDescription(offer);
+
+        const resp = await fetch(
+            `http://${location.hostname}:8081/offer`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(pc.localDescription)
+            }
+        );
+
+        const answer = await resp.json();
+        await pc.setRemoteDescription(answer);
+
+        console.log("WebRTC connected!");
+    }
+
+    // Autoplay workaround (required for audio)
+    document.body.addEventListener("click", () => {
+        const video = document.getElementById("webrtcVideo");
+        video.muted = false;
+        video.play();
+    }, { once: true });
+
+    initWebRTC().catch(e => {
+        console.error(e);
+        alert("WebRTC init failed: " + e);
+    });
+</script>
+<p style="text-align:center"><a href="/">Back to main</a></p>
+</body>
+</html>

@@ -7,9 +7,8 @@
     <link rel="icon" href="/images/favicon.png" type="image/x-icon"/>
 </head>
 <body>
+<video id="video" controls autoplay></video>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-
-<video id="video" controls autoplay muted></video>
 
 <script>
     const video = document.getElementById('video');
@@ -22,12 +21,13 @@
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src;
     }
+
 </script>
 <h1 style="text-align:center">HLS Live Stream</h1>
-<video id="hlsplayer" class="video-js vjs-default-skin" controls autoplay width="800" height="450">
-    <source src="/hls/index.m3u8">
-</video>
+
+
 <p style="text-align:center"><a href="/webrtc.html">Open low-latency WebRTC viewer</a></p>
+<p style="text-align:center"><a href="/given.html">Open given WebRTC viewer</a></p>
 <script src="https://unpkg.com/video.js/dist/video.js"></script>
 </body>
 </html>

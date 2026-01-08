@@ -6,7 +6,10 @@ import aiohttp_cors
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer, MediaRelay
-
+from prometheus_client import (
+    Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+)
+import time
 # ================== ENV ==================
 INPUT = os.getenv("INPUT", "/dev/video0")
 USE_NVENC = os.getenv("USE_NVENC", "false").lower() in ("1", "true", "yes")
@@ -41,10 +44,12 @@ def v4l2_input(dev):
 def build_ffmpeg_cmd():
     enc = pick_encoder()
     if INPUT.startswith("/dev/"):
-        input_opts = v4l2_input(INPUT)
+        video_in = v4l2_input(INPUT)
     else:
-        input_opts = f"-re -i {shlex.quote(INPUT)}"
+        video_in = f"-re -i {shlex.quote(INPUT)}"
 
+    # AUDIO input (ALSA)
+    audio_in = "-f alsa -ac 1 -i hw:1,0"
     scale_filter = f"{enc['scale']}={SCALE}"
     hls_path = f"{HLS_DIR}/index.m3u8"
     udp_target = f"udp://127.0.0.1:{UDP_PORT}"
@@ -56,13 +61,17 @@ def build_ffmpeg_cmd():
 
     cmd = (
         f"ffmpeg -hide_banner -loglevel warning -y "
-        f"{input_opts} "
+        f"{video_in} {audio_in} "
         f"-vf \"{scale_filter}\" "
         f"-pix_fmt {enc['pix_fmt']} "
         f"-c:v {enc['codec']} {enc['extra']} "
+        f"-c:a aac -b:a 128k "  # <--- Añadimos codec de audio
         f"-preset ultrafast -tune zerolatency -g 30 -b:v 4000k "
-        f"-bf 0 -probesize 32 -f tee -map 0:v \"{tee}\""
+        f"-map 0:v -map 1:a "
+        f"-bf 0 -probesize 32 -f tee \"{tee}\""
+        
         '''
+        comment
         cmd = (
     f"ffmpeg -hide_banner -loglevel warning -y "
     f"{input_opts} "
@@ -75,6 +84,10 @@ def build_ffmpeg_cmd():
     return cmd
 
 async def ffmpeg_runner():
+    ffmpeg_running.set(1)
+    proc = await asyncio.create_subprocess_shell(cmd)
+    await proc.wait()
+    ffmpeg_running.set(0)
     while True:
         cmd = build_ffmpeg_cmd()
         print("Launching ffmpeg:\n", cmd)
@@ -97,20 +110,29 @@ async def offer(request):
 
     @pc.on("connectionstatechange")
     async def on_connstatechange():
-        if pc.connectionState in ("failed","closed"):
+        if pc.connectionState == "connected":
+            webrtc_peers.inc()
+        elif pc.connectionState in ("failed", "closed", "disconnected"):
+            webrtc_peers.dec()
             await pc.close()
             pcs.discard(pc)
 
     # Suscribirse al flujo relay para que todos los viewers vean lo mismo
-    if player.video:
-        pc.addTrack(relay.subscribe(player.video))
+    # primero el audio para evitar bugs en chrome
     if player.audio:
         pc.addTrack(relay.subscribe(player.audio))
+    if player.video:
+        pc.addTrack(relay.subscribe(player.video))
 
-    await pc.setRemoteDescription(offer)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
 
+    try:
+        await pc.setRemoteDescription(offer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+    except Exception:
+        webrtc_errors.inc()
+        raise
+    webrtc_offers.inc()
     return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
 
@@ -119,10 +141,48 @@ async def on_shutdown(app):
     pcs.clear()
     print("All peer connections closed")
 
+# ================== METRICS ==================
+START_TIME = time.time()
+
+webrtc_peers = Gauge(
+    "webrtc_peers",
+    "Active WebRTC peer connections"
+)
+
+webrtc_offers = Counter(
+    "webrtc_offers_total",
+    "Total WebRTC offers received"
+)
+
+webrtc_errors = Counter(
+    "webrtc_errors_total",
+    "Total WebRTC errors"
+)
+
+ffmpeg_running = Gauge(
+    "ffmpeg_running",
+    "FFmpeg process running (1 = yes, 0 = no)"
+)
+
+uptime = Gauge(
+    "app_uptime_seconds",
+    "Application uptime in seconds"
+)
+
+# Añade METRICS para utilizar prometheus
+async def metrics(request):
+    uptime.set(time.time() - START_TIME)
+    return web.Response(
+        body=generate_latest(),
+        headers={"Content-Type": CONTENT_TYPE_LATEST},
+    )
+
+
 # ================== HTTP APP ==================
 async def init_app():
     app = web.Application()
     app.router.add_post("/offer", offer)
+    app.router.add_get("/metrics", metrics)
 
     # Configura CORS para TODAS las rutas automáticamente
     cors = aiohttp_cors.setup(app, defaults={
@@ -137,8 +197,10 @@ async def init_app():
     for route in list(app.router.routes()):
         cors.add(route)
 
+
     app.on_shutdown.append(on_shutdown)
     return app
+
 
 # ================== MAIN ==================
 async def main():
@@ -150,7 +212,11 @@ async def main():
     player = MediaPlayer(
         f"udp://127.0.0.1:{UDP_PORT}",
         format="mpegts",
-        options={"stimeout": "5000000"}
+        options={"fflags": "nobuffer",
+                 "flags": "low_delay",
+                 "probesize": "32",
+                 "analyzeduration": "0",
+                 "stimeout": "5000000"}
     )
     relay = MediaRelay()
 

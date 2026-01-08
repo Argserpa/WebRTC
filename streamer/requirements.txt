@@ -3,3 +3,4 @@ aiohttp
 opencv-python-headless
 aiohttp==3.8.5
 aiohttp_cors==0.7.0
+prometheus-client
