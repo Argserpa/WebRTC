@@ -6,56 +6,84 @@
     <link rel="icon" href="/images/favicon.png" type="image/x-icon"/>
 </head>
 <body>
-<h1 style="text-align:center">WebRTC Live Viewer</h1>
-<video id="video" autoplay playsinline controls style="width:80%;height:auto;margin:0 auto;display:block;"></video>
+
+<h1 style="text-align:center">WebRTC Live Viewer (Low Latency)</h1>
+
+<video id="video"
+       playsinline
+       controls
+       style="width:80%;height:auto;margin:0 auto;display:block;background:black">
+</video>
+
+<div style="text-align:center;margin-top:10px;">
+    <button onclick="startPlayback()">▶ Start playback</button>
+</div>
 
 <script>
+    let pc;
+    const videoEl = document.getElementById('video');
+
+    async function startPlayback() {
+        try {
+            await videoEl.play();
+            console.log("Playback started");
+        } catch (e) {
+            console.warn("User gesture required:", e);
+        }
+    }
+
     async function initWebRTC() {
-        const pc = new RTCPeerConnection({
-            iceServers: [
-                { urls: "stun:stun.l.google.com:19302" }
-            ]
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
         });
 
-        const videoEl = document.getElementById('video');
+        /* ---- DEBUG ---- */
+        pc.oniceconnectionstatechange = () =>
+            console.log("ICE state:", pc.iceConnectionState);
 
-        // Receive tracks from streamer
+        pc.onconnectionstatechange = () =>
+            console.log("Peer state:", pc.connectionState);
+
+        /* ---- IMPORTANT: explicit recvonly transceivers ---- */
+        pc.addTransceiver("video", { direction: "recvonly" });
+        pc.addTransceiver("audio", { direction: "recvonly" });
+
         pc.ontrack = (event) => {
-            if (videoEl.srcObject !== event.streams[0]) {
+            console.log("Track received:", event.track.kind);
+
+            if (!videoEl.srcObject) {
                 videoEl.srcObject = event.streams[0];
             }
         };
 
-        // Viewer is receive-only: no microphone/camera tracks sent
-        // Create data channel if needed for signaling (optional)
-        // const dc = pc.createDataChannel("chat");
-
-        // Create offer
-        const offer = await pc.createOffer({offerToReceiveVideo: true, offerToReceiveAudio: true});
+        const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // Send offer to signaling server
         const resp = await fetch(`http://${location.hostname}:8081/offer`, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(pc.localDescription)
         });
 
-        if (!resp.ok) throw new Error('Failed to get answer from server');
+        if (!resp.ok) {
+            throw new Error("Failed to fetch WebRTC answer");
+        }
 
         const answer = await resp.json();
         await pc.setRemoteDescription(answer);
 
-        console.log("WebRTC connected!");
+        console.log("WebRTC signaling completed");
     }
 
-    // Initialize and catch errors
     initWebRTC().catch(e => {
         console.error(e);
         alert("WebRTC init failed: " + e);
     });
 </script>
-<p style="text-align:center"><a href="/">Back to main</a></p>
+
+<p style="text-align:center">
+    <a href="/">Back to main</a>
+</p>
 
 </body>
 </html>

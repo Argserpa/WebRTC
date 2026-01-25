@@ -32,3 +32,8 @@ servidor de medios con WebRTC
     arecord -D hw:1,0 -d 5 test.wav -f S16_LE
     aplay -D plughw:2,0 test.wav
 ```
+
+# probar el video tanto en host como en contenedor 
+``` bash
+    ffplay -fflags nobuffer -flags low_delay udp://127.0.0.1:10000
+```
