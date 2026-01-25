@@ -49,7 +49,7 @@ def build_ffmpeg_cmd():
         video_in = f"-re -i {shlex.quote(INPUT)}"
 
     # AUDIO input (ALSA)
-    audio_in = "-f alsa -ac 1 -i hw:1,0"
+    audio_in = "-f alsa -ac 1 -i plughw:1,0"
     scale_filter = f"{enc['scale']}={SCALE}"
     hls_path = f"{HLS_DIR}/index.m3u8"
     udp_target = f"udp://127.0.0.1:{UDP_PORT}"
@@ -60,16 +60,18 @@ def build_ffmpeg_cmd():
     )
 
     cmd = (
-        f"ffmpeg -hide_banner -loglevel warning -y "
-        f"{video_in} {audio_in} "
-        f"-vf \"{scale_filter}\" "
-        f"-pix_fmt {enc['pix_fmt']} "
-        f"-c:v {enc['codec']} {enc['extra']} "
-        f"-c:a aac -b:a 128k "  # <--- Añadimos codec de audio
-        f"-preset ultrafast -tune zerolatency -g 30 -b:v 4000k "
-        f"-map 0:v -map 1:a "
-        f"-bf 0 -probesize 32 -f tee \"{tee}\""
-        
+    f"ffmpeg -hide_banner -loglevel warning -y "
+    f"{video_in} {audio_in} "
+    f"-use_wallclock_as_timestamps 1 "
+    f"-fflags nobuffer -flags low_delay "
+    f"-vf \"{scale_filter}\" "
+    f"-pix_fmt {enc['pix_fmt']} "
+    f"-c:v {enc['codec']} {enc['extra']} "
+    f"-preset ultrafast -tune zerolatency -g 30 -b:v 4000k "
+    f"-c:a aac -b:a 128k "
+    f"-map 0:v -map 1:a "
+    f"-bf 0 -probesize 32 -f tee \"{tee}\""
+
         '''
         comment
         cmd = (
@@ -84,16 +86,14 @@ def build_ffmpeg_cmd():
     return cmd
 
 async def ffmpeg_runner():
-    ffmpeg_running.set(1)
-    proc = await asyncio.create_subprocess_shell(cmd)
-    await proc.wait()
-    ffmpeg_running.set(0)
     while True:
+        ffmpeg_running.set(1)
         cmd = build_ffmpeg_cmd()
         print("Launching ffmpeg:\n", cmd)
         proc = await asyncio.create_subprocess_shell(cmd)
         await proc.wait()
         print(f"ffmpeg exited ({proc.returncode}), restarting in {FFMPEG_LOOP_RESTART_DELAY}s...")
+        ffmpeg_running.set(0)
         await asyncio.sleep(FFMPEG_LOOP_RESTART_DELAY)
 
 # ================== WEBRTC ==================

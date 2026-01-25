@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libavfilter-dev \
     libswscale-dev \
     libswresample-dev \
+    alsa-utils \
     v4l-utils \
     libv4l-0 \
     libv4l-dev \

@@ -43,6 +43,9 @@ services:
   prometheus:
     image: prom/prometheus
     container_name: prometheus
+    environment:
+      # increases the log level from info to debug
+      - GF_LOG_LEVEL=error
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
@@ -53,6 +56,9 @@ services:
   grafana:
     image: grafana/grafana
     container_name: grafana
+    environment:
+      # increases the log level from info to debug
+      - GF_LOG_LEVEL=error
     ports:
       - "3000:3000"
     volumes:
