@@ -37,3 +37,5 @@ servidor de medios con WebRTC
 ``` bash
     ffplay -fflags nobuffer -flags low_delay udp://127.0.0.1:10000
 ```
+
+docker network create -d bridge monitoring_network

@@ -2,32 +2,127 @@
 <html>
 <head>
     <meta charset="utf-8"/>
-    <title>HLS Live</title>
-    <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet" />
+    <title>WebRTC Live Viewer</title>
     <link rel="icon" href="/images/favicon.png" type="image/x-icon"/>
 </head>
 <body>
-<video id="video" controls autoplay></video>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
+<h1 style="text-align:center">WebRTC Live Viewer (Low Latency)</h1>
+
+<video id="video"
+       autoplay
+       playsinline
+       controls
+       style="width:80%;height:auto;margin:0 auto;display:block;background:black">
+
+</video>
+
+<div style="text-align:center;margin-top:10px;">
+    <button onclick="startPlayback()">▶ Start playback</button>
+</div>
 
 <script>
-    const video = document.getElementById('video');
-    const src = '/hls/index.m3u8';
+    let pc;
+    let dataChannel;
+    const videoEl = document.getElementById('video');
 
-    if (Hls.isSupported()) {
-        const hls = new Hls();
-        hls.loadSource(src);
-        hls.attachMedia(video);
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = src;
+    async function startPlayback() {
+        try {
+            await videoEl.play();
+            console.log("Playback started");
+        } catch (e) {
+            console.warn("User gesture required:", e);
+        }
     }
 
+    async function initWebRTC() {
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
+
+        /* ---- DEBUG ---- */
+        pc.oniceconnectionstatechange = () =>
+            console.log("ICE state:", pc.iceConnectionState);
+
+        pc.onconnectionstatechange = () =>
+            console.log("Peer state:", pc.connectionState);
+
+        /* ---- IMPORTANT: explicit recvonly transceivers ---- */
+        pc.addTransceiver("video", { direction: "recvonly" });
+        pc.addTransceiver("audio", { direction: "recvonly" });
+
+
+        /* Métricas: Manejo del canal de datos */
+        pc.ondatachannel = function(event) {
+            dataChannel = event.channel;
+
+            dataChannel.onopen = function() {
+                console.log("DataChannel is open");
+                // Comenzar a enviar pings de latencia
+                setInterval(sendLatencyPing, 5000);
+            };
+
+            dataChannel.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.type === 'latency_pong') {
+                    const now = Date.now();
+                    const rtt = now - data.timestamp;
+
+                    // Reportar latencia al servidor
+                    dataChannel.send(JSON.stringify({
+                        type: 'latency_report',
+                        latency: rtt
+                    }));
+
+                    console.log(`Latencia: ${rtt} ms`);
+                }
+            };
+        };
+        /* Fin métricas */
+        pc.ontrack = (event) => {
+            console.log("Track received:", event.track.kind);
+
+            if (!videoEl.srcObject) {
+                videoEl.srcObject = event.streams[0];
+            }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const resp = await fetch(`http://${location.hostname}:8081/offer`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(pc.localDescription)
+        });
+
+        if (!resp.ok) {
+            throw new Error("Failed to fetch WebRTC answer");
+        }
+
+        const answer = await resp.json();
+        await pc.setRemoteDescription(answer);
+
+        console.log("WebRTC signaling completed");
+    }
+
+    // Función para enviar un ping de latencia
+    function sendLatencyPing() {
+        if (dataChannel && dataChannel.readyState === 'open') {
+            const timestamp = Date.now();
+            dataChannel.send(JSON.stringify({
+                type: 'latency_ping',
+                timestamp: timestamp
+            }));
+        }
+    }
+
+
+    initWebRTC().catch(e => {
+        console.error(e);
+        alert("WebRTC init failed: " + e);
+    });
 </script>
-<h1 style="text-align:center">HLS Live Stream</h1>
 
-
-<p style="text-align:center"><a href="/webrtc.html">Open low-latency WebRTC viewer</a></p>
-<p style="text-align:center"><a href="/given.html">Open given WebRTC viewer</a></p>
-<script src="https://unpkg.com/video.js/dist/video.js"></script>
 </body>
 </html>

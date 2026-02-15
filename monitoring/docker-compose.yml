@@ -2,10 +2,9 @@
 services:
   # Nginx Streaming Server
   nginx-stream:
-    image: webrtc_prometheus  # Imagen creada
-    container_name: webrtc_prometheus # nombre único de la magen creada
-    ports:   # puertos necesarios para la configuración del servidor
-      - "1935:1935" # puerto de streaming a configurar en OBS studio.
+    image: webrtc_server  # Imagen creada
+    container_name: webrtc # nombre único de la magen creada
+    ports:
       - "80:80"     # puerto para la página donde se aloja el streaming
       - "443:443"   # puerto https
     volumes:
@@ -15,7 +14,7 @@ services:
     restart: unless-stopped
     networks:
       - streaming_network # Red para el streaming
-      # - monitoring_network # Optconal: para otras configuraciones de Prometheus
+      - monitoring_network # Opcional: para otras configuraciones de Prometheus
 
   # Nginx Prometheus Exporter
   nginx-exporter:
@@ -29,7 +28,7 @@ services:
     restart: unless-stopped
     networks:
       - monitoring_network
-
+      - streaming_network # debe estar en la misma red que nginx-stream para poder comunicarse.
 
   prometheus:
     image: prom/prometheus:latest
@@ -60,7 +59,6 @@ services:
 
   node-exporter:
     image: prom/node-exporter:latest
-    container_name: node_exporter_server
     command:
       - '--path.rootfs=/host'
     volumes:

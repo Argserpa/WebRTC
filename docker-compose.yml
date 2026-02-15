@@ -22,6 +22,9 @@ services:
     deploy:
       restart_policy:
         condition: any
+    networks:
+      - monitoring_network
+      - streaming_network
 
     # Use this when you have NVIDIA container toolkit installed:
     #runtime: nvidia
@@ -41,17 +44,20 @@ services:
       - hls-data:/var/www/hls
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:latest
     container_name: prometheus
     environment:
       # increases the log level from info to debug
       - GF_LOG_LEVEL=error
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
-    depends_on:
-      - streamer
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command: --config.file=/etc/prometheus/prometheus.yml --web.enable-lifecycle
+    restart: unless-stopped
+    networks:
+      - monitoring_network
 
   grafana:
     image: grafana/grafana
@@ -65,8 +71,33 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus
+    networks:
+      - monitoring_network
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    command:
+      - '--path.rootfs=/host'
+    volumes:
+      - '/:/host:ro'
+    environment:
+      # increases the log level from info to debug
+      - GF_LOG_LEVEL=error
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+    networks:
+      - monitoring_network
+
+networks:
+  # Define both networks
+  streaming_network:
+    driver: bridge
+  monitoring_network:
+    driver: bridge
 
 volumes:
   hls-data:
   recordings:
   grafana-data:
+  prometheus_data:
