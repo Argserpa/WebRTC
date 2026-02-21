@@ -23,7 +23,6 @@
 
 <script>
     let pc;
-    let dataChannel;
     const videoEl = document.getElementById('video');
 
     async function startPlayback() {
@@ -38,6 +37,31 @@
     async function initWebRTC() {
         pc = new RTCPeerConnection({
             iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+            /*
+            iceServers : [
+                // STUN servers (múltiples para redundancia)
+                { urls: "stun:stun.l.google.com:19302" },
+                //{ urls: "stun:stun1.l.google.com:19302" },
+                //{ urls: "stun:stun2.l.google.com:19302" },
+                { urls: "stun:stun.cloudflare.com:3478" }, // Cloudflare, muy estable
+
+                // TURN servers gratuitos (esenciales para NATs difíciles)
+                {
+                    urls: "turn:openrelay.metered.ca:80",
+                    username: "openrelayproject",
+                    credential: "openrelayproject"
+                }/*,
+                {
+                    urls: "turn:openrelay.metered.ca:443",
+                    username: "openrelayproject",
+                    credential: "openrelayproject"
+                }/*,
+                {
+                    urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                    username: "openrelayproject",
+                    credential: "openrelayproject"
+                }*//*
+            ]*/
         });
 
         /* ---- DEBUG ---- */
@@ -51,34 +75,6 @@
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
-
-        /* Métricas: Manejo del canal de datos */
-        pc.ondatachannel = function(event) {
-            dataChannel = event.channel;
-
-            dataChannel.onopen = function() {
-                console.log("DataChannel is open");
-                // Comenzar a enviar pings de latencia
-                setInterval(sendLatencyPing, 5000);
-            };
-
-            dataChannel.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if (data.type === 'latency_pong') {
-                    const now = Date.now();
-                    const rtt = now - data.timestamp;
-
-                    // Reportar latencia al servidor
-                    dataChannel.send(JSON.stringify({
-                        type: 'latency_report',
-                        latency: rtt
-                    }));
-
-                    console.log(`Latencia: ${rtt} ms`);
-                }
-            };
-        };
-        /* Fin métricas */
         pc.ontrack = (event) => {
             console.log("Track received:", event.track.kind);
 
@@ -105,18 +101,6 @@
 
         console.log("WebRTC signaling completed");
     }
-
-    // Función para enviar un ping de latencia
-    function sendLatencyPing() {
-        if (dataChannel && dataChannel.readyState === 'open') {
-            const timestamp = Date.now();
-            dataChannel.send(JSON.stringify({
-                type: 'latency_ping',
-                timestamp: timestamp
-            }));
-        }
-    }
-
 
     initWebRTC().catch(e => {
         console.error(e);

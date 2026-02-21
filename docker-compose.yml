@@ -14,6 +14,11 @@ services:
       - RECORD_DIR=/recordings
       - UDP_PORT=10000
       - VIDEO_SCALE=${VIDEO_SCALE:-1280:720}
+      - TURN_SERVER_HOST=${TURN_SERVER_HOST:-localhost}
+      - TURN_SERVER_PORT=${TURN_SERVER_PORT:-3478}
+      - TURN_SERVER_USER=${TURN_SERVER_USER:-turnuser}
+      - TURN_SERVER_PASS=${TURN_SERVER_PASS:-turnpass}
+
     volumes:
       - hls-data:/var/www/hls
       - recordings:/recordings

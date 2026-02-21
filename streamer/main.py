@@ -192,21 +192,21 @@ async def ffmpeg_runner():
             #     parse_ffmpeg_output(line_str)
             logging.info("Procesando salida de error de FFmpeg")
             # Generar un identificador único para este stream (puedes basarlo en timestamp o PID)
-            stream_id = f"stream_{process.pid}_{int(time.time())}"
+#            stream_id = f"stream_{process.pid}_{int(time.time())}"
 
             # Crear una tarea para monitorizar FFmpeg en paralelo
-            monitor_task = asyncio.create_task(monitor_ffmpeg_stream(process, stream_id))
+#            monitor_task = asyncio.create_task(monitor_ffmpeg_stream(process, stream_id))
 
             # Esperar a que el proceso termine
             await process.wait()
 
             # Cancelar la tarea de monitorización si aún está en ejecución
-            if not monitor_task.done():
-                monitor_task.cancel()
-                try:
-                    await monitor_task
-                except asyncio.CancelledError:
-                    pass
+#            if not monitor_task.done():
+#                monitor_task.cancel()
+#                try:
+#                    await monitor_task
+#                except asyncio.CancelledError:
+#                    pass
 
             # Si llegamos aquí, es porque FFmpeg se detuvo
             ffmpeg_running.set(0)
@@ -231,11 +231,36 @@ player = None
 relay = None
 #local_ip = "192.168.1.45"
 
-#config = RTCConfiguration(
-#    iceServers=[
-#        RTCIceServer(urls=["stun:stun.l.google.com:19302"]) # Servidor STUN gratuito
-#    ]
-#)
+# STUN servers (múltiples para redundancia)
+# Cloudflare, muy estable
+# TURN servers gratuitos (esenciales para NATs difíciles)
+config = RTCConfiguration(
+    iceServers = [
+        RTCIceServer(
+            urls=[   "stun:stun.l.google.com:19302" ,
+           #         "stun:stun1.l.google.com:19302" ,
+           #         "stun:stun2.l.google.com:19302" ,
+                    "stun:stun.cloudflare.com:3478"
+        ]),
+        RTCIceServer(
+            urls= "turn:openrelay.metered.ca:80",
+            username= "openrelayproject",
+            credential= "openrelayproject"
+        )
+        # ,
+        # RTCIceServer(
+        #     urls= "turn:openrelay.metered.ca:443",
+        #     username= "openrelayproject",
+        #     credential= "openrelayproject"
+        # ),
+        # RTCIceServer(
+        #     urls= "turn:openrelay.metered.ca:443?transport=tcp",
+        #     username= "openrelayproject",
+        #     credential= "openrelayproject"
+        # )
+    ]
+)
+
 async def offer(request):
     global player, relay
 
@@ -259,36 +284,37 @@ async def offer(request):
     @pc.on("connectionstatechange")
     async def on_state_change():
         logging.info("Connection state: %s", pc.connectionState)
-        if pc.connectionState in ("failed", "closed", "disconnected"):
-            webrtc_peers.dec()
+        if pc.connectionState in ("failed", "closed", "disconnected") :
+            if  webrtc_peers.collect()[0].samples[0].value > 0:
+                webrtc_peers.dec()
             await pc.close()
             pcs.discard(pc)
 
     await pc.setRemoteDescription(offer)
 
     # Crear un canal de datos para medir la latencia
-    channel = pc.createDataChannel("metrics")
+    #channel = pc.createDataChannel("metrics")
 
-    @channel.on("open")
-    async def on_open():
-        print("DataChannel is open")
-
-    @channel.on("message")
-    async def on_message(message):
-        try:
-            data = json.loads(message)
-            if data.get("type") == "latency_ping":
-                # Responder inmediatamente con un pong
-                await channel.send(json.dumps({
-                    "type": "latency_pong",
-                    "timestamp": data["timestamp"]
-                }))
-            elif data.get("type") == "latency_report":
-                # Registrar latencia reportada por el cliente
-                latency_value = float(data.get("latency", 0))
-                latency.observe(latency_value)
-        except Exception as e:
-            print(f"Error handling data channel message: {e}")
+    # @channel.on("open")
+    # async def on_open():
+    #     print("DataChannel is open")
+    #
+    # @channel.on("message")
+    # async def on_message(message):
+    #     try:
+    #         data = json.loads(message)
+    #         if data.get("type") == "latency_ping":
+    #             # Responder inmediatamente con un pong
+    #             await channel.send(json.dumps({
+    #                 "type": "latency_pong",
+    #                 "timestamp": data["timestamp"]
+    #             }))
+    #         elif data.get("type") == "latency_report":
+    #             # Registrar latencia reportada por el cliente
+    #             latency_value = float(data.get("latency", 0))
+    #             latency.observe(latency_value)
+    #     except Exception as e:
+    #         print(f"Error handling data channel message: {e}")
 
     # 👉 AQUÍ ESTÁ LA CLAVE
     if player.video:
