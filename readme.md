@@ -9,7 +9,7 @@ servidor de medios con WebRTC
     docker compose up
 ```
 ``` bash
-    docker compose down
+    docker compose down && docker compose build
 ```
 
 ``` bash

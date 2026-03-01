@@ -1,6 +1,8 @@
 services:
   streamer:
-    build: ./streamer
+    build:
+      context: ./streamer
+
     container_name: video-streamer
     privileged: true
     devices:
@@ -27,9 +29,11 @@ services:
     deploy:
       restart_policy:
         condition: any
+
     networks:
       - monitoring_network
       - streaming_network
+
 
     # Use this when you have NVIDIA container toolkit installed:
     #runtime: nvidia

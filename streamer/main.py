@@ -237,16 +237,16 @@ relay = None
 config = RTCConfiguration(
     iceServers = [
         RTCIceServer(
-            urls=[   "stun:stun.l.google.com:19302" ,
-           #         "stun:stun1.l.google.com:19302" ,
-           #         "stun:stun2.l.google.com:19302" ,
+            urls=[  "stun:stun.l.google.com:19302" ,
+                    "stun:stun1.l.google.com:19302" ,
+                  #  "stun:stun2.l.google.com:19302" ,
                     "stun:stun.cloudflare.com:3478"
-        ]),
-        RTCIceServer(
-            urls= "turn:openrelay.metered.ca:80",
-            username= "openrelayproject",
-            credential= "openrelayproject"
-        )
+        ])#,
+   #     RTCIceServer(
+   #         urls= "turn:openrelay.metered.ca:80",
+   #         username= "openrelayproject",
+   #         credential= "openrelayproject"
+   #     )
         # ,
         # RTCIceServer(
         #     urls= "turn:openrelay.metered.ca:443",
@@ -274,7 +274,7 @@ async def offer(request):
     logging.info(f"Current number of WebRTC peers: {webrtc_peers}")
 
 
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(configuration=config)
     pcs.add(pc)
     webrtc_offers.inc()
     webrtc_peers.inc()
@@ -316,14 +316,28 @@ async def offer(request):
     #     except Exception as e:
     #         print(f"Error handling data channel message: {e}")
 
-    # 👉 AQUÍ ESTÁ LA CLAVE
+
     if player.video:
         pc.addTrack(relay.subscribe(player.video))
     if player.audio:
         pc.addTrack(relay.subscribe(player.audio))
 
+    gathering_complete = asyncio.Event()
+
+    @pc.on("icegatheringstatechange")
+    def on_ice_gathering_state_change():
+        if pc.iceGatheringState == "complete":
+            gathering_complete.set()
+
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
+
+
+
+    #answer = await pc.createAnswer()
+    #await pc.setLocalDescription(answer)
+
+    await gathering_complete.wait()
 
     return web.json_response(
         {
