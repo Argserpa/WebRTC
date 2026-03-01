@@ -431,7 +431,7 @@ async def main():
     global player, relay
     player = MediaPlayer(
         f"udp://127.0.0.1:{UDP_PORT}"
-        f"?fifo_size=50000"            # buffer mínimo para no perder paquetes
+        f"?fifo_size=35000"            # buffer mínimo para no perder paquetes
         f"&overrun_nonfatal=1"
         f"&timeout=500000",           # 0.5s timeout si no llegan datos
         format="mpegts",
@@ -441,7 +441,7 @@ async def main():
             "probesize": "64",        # mínimo posible
             "analyzeduration": "0",   # sin análisis inicial
             "reorder_queue_size": "0",
-            "sync": "video",
+            "sync": "ext",
             "thread_type": "slice",
             "threads": "auto"
         }
