@@ -103,30 +103,32 @@ def build_ffmpeg_cmd():
     # f"-bf 0 -probesize 32 -f tee \"{tee}\""
     # )
 
-    cmd = (
-        "ffmpeg -hide_banner -loglevel warning -y -stats "
-        "-f v4l2 -video_size 1280x720 -framerate 10 -i /dev/video0 "
-        "-f alsa -ac 1 -i plughw:1,0 "
-        "-vf scale=640:360 "
-        "-map 0:v:0 -map 1:a:0 "
-        "-c:v libx264 -preset ultrafast -tune zerolatency "
-        "-profile:v baseline -level 3.1 -pix_fmt yuv420p "
-        "-g 20 -keyint_min 20 -sc_threshold 0 "
-        "-x264-params repeat-headers=1 "
-        "-bsf:v h264_metadata=aud=insert "
-        "-c:a aac -ar 48000 -ac 1 "
-        "-mpegts_flags resend_headers "
-        "-muxdelay 0 -muxpreload 0 "
-        "-f mpegts -pkt_size 1316 -progress pipe:1 udp://127.0.0.1:10000"
-    )
+    # cmd = (
+    #     "ffmpeg -hide_banner -loglevel warning -y -stats "
+    #     "-f v4l2 -video_size 1280x720 -framerate 10 -i /dev/video0 "
+    #     "-f alsa -ac 1 -i plughw:1,0 "
+    #     "-vf scale=640:360 "
+    #     "-map 0:v:0 -map 1:a:0 "
+    #     "-c:v libx264 -preset ultrafast -tune zerolatency "
+    #     "-profile:v baseline -level 3.1 -pix_fmt yuv420p "
+    #     "-g 20 -keyint_min 20 -sc_threshold 0 "
+    #     "-x264-params repeat-headers=1 "
+    #     "-bsf:v h264_metadata=aud=insert "
+    #     "-c:a aac -ar 48000 -ac 1 "
+    #     "-mpegts_flags resend_headers "
+    #     "-muxdelay 0 -muxpreload 0 "
+    #     "-f mpegts -pkt_size 1316 -progress pipe:1 udp://127.0.0.1:10000"
+    # )
     #logging.info("cmd00: %s", cmd)
     cmd = (
         "ffmpeg -hide_banner -loglevel warning -y -stats "
         f"{video_in} {audio_in} "
+        "-fflags nobuffer "               # ← sin buffer de entrada
+        "-flags low_delay "               # ← modo baja latencia
         "-map 0:v:0 -map 1:a:0 "
         "-c:v libx264 -preset ultrafast -tune zerolatency "
         "-profile:v baseline -level 3.1 -pix_fmt yuv420p "
-        "-g 10 -keyint_min 20 -sc_threshold 0 "
+        "-g 10 -keyint_min 10 -sc_threshold 0 "
         "-x264-params repeat-headers=1 "
         "-bsf:v h264_metadata=aud=insert "
         "-c:a aac -ar 48000 -ac 1 "
@@ -152,6 +154,9 @@ def command_to_list(command_string):
     """
     return shlex.split(command_string)
 
+
+# Variable global para sincronización
+ffmpeg_started = asyncio.Event()
 
 async def ffmpeg_runner():
     cmd = build_ffmpeg_cmd()
@@ -184,6 +189,8 @@ async def ffmpeg_runner():
 
             player = process
 
+            await asyncio.sleep(1.5)
+
             # Procesar la salida de error de FFmpeg para extraer métricas
             # async for line in process.stderr:
             #     line_str = line.decode('utf-8', errors='replace')
@@ -196,6 +203,9 @@ async def ffmpeg_runner():
 
             # Crear una tarea para monitorizar FFmpeg en paralelo
 #            monitor_task = asyncio.create_task(monitor_ffmpeg_stream(process, stream_id))
+
+            logging.info("FFmpeg is running and stable")
+            ffmpeg_started.set()
 
             # Esperar a que el proceso termine
             await process.wait()
@@ -210,11 +220,13 @@ async def ffmpeg_runner():
 
             # Si llegamos aquí, es porque FFmpeg se detuvo
             ffmpeg_running.set(0)
+            ffmpeg_started.clear()  # reset para el siguiente ciclo
             #print(f"FFmpeg process exited with code {process.returncode}")
             logging.info("FFmpeg process exited with code %s", process.returncode)
 
         except Exception as e:
             ffmpeg_running.set(0)
+            ffmpeg_started.clear()  # reset para el siguiente ciclo
             #print(f"Error running FFmpeg: {e}")
             logging.exception("Error running FFmpeg")
 
@@ -376,24 +388,57 @@ async def init_app():
     return app
 
 
+async def wait_for_udp(port: int, timeout: int = 10):
+    """Espera hasta que FFmpeg empiece a enviar datos UDP"""
+    import socket
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", port))
+            sock.close()
+            await asyncio.sleep(0.5)  # puerto libre aún, FFmpeg no ha arrancado
+        except OSError:
+            logging.info("UDP port %d is active, FFmpeg is running", port)
+            return
+        await asyncio.sleep(0.2)
+    raise TimeoutError("FFmpeg did not start in time")
+
+
 # ================== MAIN ==================
 async def main():
     # iniciar FFmpeg en background
     asyncio.create_task(ffmpeg_runner())
-    await asyncio.sleep(4)  # dar tiempo a FFmpeg para abrir UDP
+
+    # Esperar a que FFmpeg arranque y sea estable (máx 15s)
+    logging.info("Waiting for FFmpeg to start...")
+    try:
+        await asyncio.wait_for(ffmpeg_started.wait(), timeout=15.0)
+        logging.info("FFmpeg ready, starting MediaPlayer")
+    except asyncio.TimeoutError:
+        logging.error("FFmpeg did not start within 15 seconds, check your devices")
+        raise
+
+    # Pequeña pausa extra para que el buffer UDP tenga datos
+    await asyncio.sleep(0.5)
 
     global player, relay
     player = MediaPlayer(
-        f"udp://127.0.0.1:{UDP_PORT}?fifo_size=50000&overrun_nonfatal=1&buffer_size=65535",
+        f"udp://127.0.0.1:{10000}"
+        f"?fifo_size=1000"            # buffer mínimo para no perder paquetes
+        f"&overrun_nonfatal=1"
+        f"&timeout=500000",           # 0.5s timeout si no llegan datos
         format="mpegts",
-        options={"fflags": "nobuffer",
-                 "flags": "low_delay",
-                 "probesize": "100000",
-                 "analyzeduration": "0",
-                 "sync": "ext",
-                 "thread_type": "slice",
-                 "threads": "auto"
-                 }
+        options={
+            "fflags": "nobuffer+discardcorrupt",
+            "flags": "low_delay",
+            "probesize": "32",        # mínimo posible
+            "analyzeduration": "0",   # sin análisis inicial
+            "max_delay": "0",
+            "reorder_queue_size": "0",
+            "sync": "ext",
+            "threads": "1"
+        }
     )
     relay = MediaRelay()
 

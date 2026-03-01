@@ -30,10 +30,7 @@ services:
       restart_policy:
         condition: any
 
-    networks:
-      - monitoring_network
-      - streaming_network
-
+    network_mode: host
 
     # Use this when you have NVIDIA container toolkit installed:
     #runtime: nvidia
@@ -55,6 +52,8 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # necesario para resolver IP en Linux
     environment:
       # increases the log level from info to debug
       - GF_LOG_LEVEL=error

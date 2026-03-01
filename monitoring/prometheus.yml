@@ -12,7 +12,7 @@ scrape_configs:
     # así que rascaremos el Nginx a través del Node Exporter
     metrics_path: /metrics # La ruta por defecto para Node Exporter y Nginx Exporter
     static_configs:
-      - targets: ['video-streamer:8081'] #
+      - targets: ['host.docker.internal:8081'] #
         labels:
           instance: webrtc_streamer
 
