@@ -58,7 +58,7 @@ def v4l2_input(dev):
     """Opciones básicas para cámara V4L2"""
     return (
         f"-f v4l2 "
-        f"-video_size 1280x720 "
+        f"-video_size {SCALE} "
         f"-framerate 10 "
         f"-i {shlex.quote(dev)}"
     )
@@ -122,9 +122,11 @@ def build_ffmpeg_cmd():
     #logging.info("cmd00: %s", cmd)
     cmd = (
         "ffmpeg -hide_banner -loglevel warning -y -stats "
-        f"{video_in} {audio_in} "
-        "-fflags nobuffer "               # ← sin buffer de entrada
-        "-flags low_delay "               # ← modo baja latencia
+        f"{video_in} "
+        "-use_wallclock_as_timestamps 1 "
+        f"{audio_in} "
+        "-fflags nobuffer "
+        "-flags low_delay "
         "-map 0:v:0 -map 1:a:0 "
         "-c:v libx264 -preset ultrafast -tune zerolatency "
         "-profile:v baseline -level 3.1 -pix_fmt yuv420p "
@@ -155,13 +157,17 @@ def command_to_list(command_string):
     return shlex.split(command_string)
 
 
-# Variable global para sincronización
+# ================== GLOBALS ==================
+pcs = set()
+ffmpeg_process = None   # ← subprocess de FFmpeg
+player = None           # ← MediaPlayer (aiortc)
+relay = None
 ffmpeg_started = asyncio.Event()
 
 async def ffmpeg_runner():
     cmd = build_ffmpeg_cmd()
     #logging.info(" Launching ffmpeg with command: %s", cmd)
-    global player
+    global ffmpeg_process
 
     ffmpeg_env = os.environ.copy()
     cmd = command_to_list(cmd)
@@ -186,23 +192,24 @@ async def ffmpeg_runner():
                 env=ffmpeg_env
             )
             logging.info("FFmpeg process started with PID %s", process.pid)
-
-            player = process
+            ffmpeg_process = process   # ← guarda el subprocess aquí
 
             await asyncio.sleep(1.5)
 
-            # Procesar la salida de error de FFmpeg para extraer métricas
-            # async for line in process.stderr:
-            #     line_str = line.decode('utf-8', errors='replace')
-            #     logging.info("FFmpeg stderr: %s", line_str)
-            #     #print(f"FFmpeg: {line_str}", end="")
-            #     parse_ffmpeg_output(line_str)
             logging.info("Procesando salida de error de FFmpeg")
             # Generar un identificador único para este stream (puedes basarlo en timestamp o PID)
 #            stream_id = f"stream_{process.pid}_{int(time.time())}"
 
             # Crear una tarea para monitorizar FFmpeg en paralelo
 #            monitor_task = asyncio.create_task(monitor_ffmpeg_stream(process, stream_id))
+
+            if process.returncode is not None:
+                logging.error("FFmpeg exited immediately with code %s", process.returncode)
+                stderr_output = await process.stderr.read()
+                logging.error("FFmpeg stderr: %s", stderr_output.decode(errors='replace'))
+                ffmpeg_running.set(0)
+                await asyncio.sleep(FFMPEG_LOOP_RESTART_DELAY)
+                continue
 
             logging.info("FFmpeg is running and stable")
             ffmpeg_started.set()
@@ -238,9 +245,6 @@ async def ffmpeg_runner():
 
 
 # ================== WEBRTC ==================
-pcs = set()
-player = None
-relay = None
 #local_ip = "192.168.1.45"
 
 # STUN servers (múltiples para redundancia)
@@ -361,6 +365,8 @@ async def offer(request):
 async def on_shutdown(app):
     await asyncio.gather(*[pc.close() for pc in pcs])
     pcs.clear()
+    if ffmpeg_process and ffmpeg_process.returncode is None:
+        ffmpeg_process.terminate()
     logging.info("All peer connections closed")
 
 
@@ -424,20 +430,20 @@ async def main():
 
     global player, relay
     player = MediaPlayer(
-        f"udp://127.0.0.1:{10000}"
-        f"?fifo_size=1000"            # buffer mínimo para no perder paquetes
+        f"udp://127.0.0.1:{UDP_PORT}"
+        f"?fifo_size=50000"            # buffer mínimo para no perder paquetes
         f"&overrun_nonfatal=1"
         f"&timeout=500000",           # 0.5s timeout si no llegan datos
         format="mpegts",
         options={
-            "fflags": "nobuffer+discardcorrupt",
+            "fflags": "nobuffer",
             "flags": "low_delay",
-            "probesize": "32",        # mínimo posible
+            "probesize": "64",        # mínimo posible
             "analyzeduration": "0",   # sin análisis inicial
-            "max_delay": "0",
             "reorder_queue_size": "0",
-            "sync": "ext",
-            "threads": "1"
+            "sync": "video",
+            "thread_type": "slice",
+            "threads": "auto"
         }
     )
     relay = MediaRelay()
