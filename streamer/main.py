@@ -7,16 +7,16 @@ from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 
-import re
 import json
 import time
-import asyncio
 import psutil
-import av
 import logging
 
-from FFmpegMetrics import monitor_ffmpeg_process, monitor_ffmpeg_stream, webrtc_peers, webrtc_offers, ffmpeg_running, \
-    latency, metrics
+from FFmpegMetrics import (
+    monitor_ffmpeg_stream,
+    webrtc_peers, webrtc_offers, webrtc_errors,
+    ffmpeg_running, latency_tracker, metrics
+)
 
 # Configuración básica para el log
 logging.basicConfig(
@@ -46,14 +46,12 @@ AUDIO_DEVICE = os.getenv("AUDIO_DEVICE", "plughw:1,0")
 
 # ================== FFMPEG ==================
 def pick_encoder():
-    """Devuelve el codec y opciones según USE_NVENC"""
     if USE_NVENC:
         return {"codec": "h264_nvenc", "pix_fmt": "yuv420p", "scale": "scale", "extra": ""}
     return {"codec": "libx264", "pix_fmt": "yuv420p", "scale": "scale", "extra": ""}
 
 
 def v4l2_input(dev):
-    """Opciones básicas para cámara V4L2"""
     return (
         f"-f v4l2 "
         f"-video_size 1280x720 "
@@ -92,12 +90,10 @@ def build_ffmpeg_cmd():
 
 
 def command_to_list(command_string):
-    """Convierte un comando en formato string a una lista de argumentos."""
     return shlex.split(command_string)
 
 
 async def ffmpeg_runner():
-    """Ejecuta FFmpeg en bucle, reiniciando si se cae."""
     cmd = build_ffmpeg_cmd()
     cmd = command_to_list(cmd)
 
@@ -111,24 +107,19 @@ async def ffmpeg_runner():
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdout=asyncio.subprocess.DEVNULL,   # No usamos -progress, evitar bloqueo
+                stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
                 env=os.environ.copy()
             )
-            logging.info("FFmpeg process started with PID %s", process.pid)
+            logging.info("FFmpeg PID %s", process.pid)
 
-            # NO sobrescribir la variable global 'player' con el proceso FFmpeg
-            # Usar stream_id estable para evitar label explosion en Prometheus
             stream_id = "main"
-
-            # Monitorizar stderr para extraer métricas
             monitor_task = asyncio.create_task(
                 monitor_ffmpeg_stream(process, stream_id)
             )
 
             await process.wait()
 
-            # Cancelar monitorización si sigue activa
             if not monitor_task.done():
                 monitor_task.cancel()
                 try:
@@ -137,7 +128,7 @@ async def ffmpeg_runner():
                     pass
 
             ffmpeg_running.set(0)
-            logging.info("FFmpeg process exited with code %s", process.returncode)
+            logging.info("FFmpeg exited with code %s", process.returncode)
 
         except Exception:
             ffmpeg_running.set(0)
@@ -171,21 +162,25 @@ config = RTCConfiguration(
 async def offer(request):
     global player, relay
 
-    params = await request.json()
-    offer_desc = RTCSessionDescription(
-        sdp=params["sdp"],
-        type=params["type"],
-    )
+    try:
+        params = await request.json()
+        offer_desc = RTCSessionDescription(
+            sdp=params["sdp"],
+            type=params["type"],
+        )
+    except Exception as e:
+        logging.error("Error parsing WebRTC offer: %s", e)
+        webrtc_errors.inc()
+        return web.json_response({"error": "Invalid offer"}, status=400)
 
     logging.info("WebRTC offer received from client")
-    logging.info("Current number of WebRTC peers: %s", webrtc_peers._value.get())
 
     pc = RTCPeerConnection()
     pcs.add(pc)
     webrtc_offers.inc()
     webrtc_peers.inc()
 
-    logging.info("New PeerConnection")
+    logging.info("New PeerConnection (total peers: %s)", len(pcs))
 
     @pc.on("connectionstatechange")
     async def on_state_change():
@@ -193,18 +188,52 @@ async def offer(request):
         if pc.connectionState in ("failed", "closed", "disconnected"):
             if webrtc_peers._value.get() > 0:
                 webrtc_peers.dec()
+            if pc.connectionState == "failed":
+                webrtc_errors.inc()
             await pc.close()
             pcs.discard(pc)
 
-    await pc.setRemoteDescription(offer_desc)
+    # DataChannel para medir latencia (el cliente crea el canal, el servidor lo recibe)
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        logging.info("DataChannel '%s' received from client", channel.label)
 
-    if player.video:
-        pc.addTrack(relay.subscribe(player.video))
-    if player.audio:
-        pc.addTrack(relay.subscribe(player.audio))
+        @channel.on("message")
+        async def on_message(message):
+            try:
+                data = json.loads(message)
+                if data.get("type") == "latency_ping":
+                    # Responder inmediatamente con pong
+                    channel.send(json.dumps({
+                        "type": "latency_pong",
+                        "timestamp": data["timestamp"]
+                    }))
+                elif data.get("type") == "latency_report":
+                    # Cliente reporta su RTT medido → registrar en el tracker
+                    rtt_ms = float(data.get("latency", 0))
+                    latency_tracker.record(rtt_ms)
+                    logging.debug("Latency reported by client: %.1f ms", rtt_ms)
+            except Exception as e:
+                logging.error("Error handling DataChannel message: %s", e)
+                webrtc_errors.inc()
 
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+    try:
+        await pc.setRemoteDescription(offer_desc)
+
+        if player.video:
+            pc.addTrack(relay.subscribe(player.video))
+        if player.audio:
+            pc.addTrack(relay.subscribe(player.audio))
+
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+    except Exception as e:
+        logging.error("Error during WebRTC negotiation: %s", e)
+        webrtc_errors.inc()
+        if webrtc_peers._value.get() > 0:
+            webrtc_peers.dec()
+        pcs.discard(pc)
+        return web.json_response({"error": str(e)}, status=500)
 
     return web.json_response(
         {
@@ -243,10 +272,6 @@ async def init_app():
 
 # ================== MEDIA PLAYER ==================
 async def create_player_with_retry(udp_port, max_retries=10, delay=1.0):
-    """
-    Intenta crear el MediaPlayer con reintentos,
-    en vez de un sleep fijo de 4 segundos.
-    """
     udp_url = (
         f"udp://127.0.0.1:{udp_port}"
         f"?fifo_size=2000"
@@ -285,10 +310,8 @@ async def create_player_with_retry(udp_port, max_retries=10, delay=1.0):
 async def main():
     global player, relay
 
-    # Iniciar FFmpeg en background
     asyncio.create_task(ffmpeg_runner())
 
-    # Crear MediaPlayer con reintentos (reemplaza el sleep(4) fijo)
     player = await create_player_with_retry(UDP_PORT)
     relay = MediaRelay()
 

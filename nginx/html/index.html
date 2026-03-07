@@ -13,17 +13,20 @@
        autoplay
        playsinline
        controls
-       style="width:80%;height:auto;margin:5em auto;display:block;background:black">
-
+       style="width:80%;height:auto;margin:0 auto;display:block;background:black">
 </video>
 
 <div style="text-align:center;margin-top:10px;">
-    <button onclick="startPlayback()">▶ Start playback</button>
+    <button onclick="startPlayback()">&#9654; Start playback</button>
+    <span id="latencyDisplay" style="margin-left:20px;font-family:monospace;font-size:14px;color:#666;"></span>
 </div>
 
 <script>
     let pc;
+    let metricsChannel;
+    let latencyInterval;
     const videoEl = document.getElementById('video');
+    const latencyDisplay = document.getElementById('latencyDisplay');
 
     async function startPlayback() {
         try {
@@ -36,51 +39,64 @@
 
     async function initWebRTC() {
         pc = new RTCPeerConnection({
-           // iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-
-            iceServers : [
-                // STUN servers (múltiples para redundancia)
-                { urls: "stun:stun.l.google.com:19302" },
-                { urls: "stun:stun1.l.google.com:19302" },
-                //{ urls: "stun:stun2.l.google.com:19302" },
-                { urls: "stun:stun.cloudflare.com:3478" }, // Cloudflare, muy estable
-
-                // TURN servers gratuitos (esenciales para NATs difíciles)
-                /*
-                {
-                    urls: "turn:openrelay.metered.ca:80",
-                    username: "openrelayproject",
-                    credential: "openrelayproject"
-                }/*,
-                {
-                    urls: "turn:openrelay.metered.ca:443",
-                    username: "openrelayproject",
-                    credential: "openrelayproject"
-                }/*,
-                {
-                    urls: "turn:openrelay.metered.ca:443?transport=tcp",
-                    username: "openrelayproject",
-                    credential: "openrelayproject"
-                }*/
-            ]
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
         });
 
-        /* ---- DEBUG ---- */
         pc.oniceconnectionstatechange = () =>
             console.log("ICE state:", pc.iceConnectionState);
 
         pc.onconnectionstatechange = () =>
             console.log("Peer state:", pc.connectionState);
 
-        /* ---- IMPORTANT: explicit recvonly transceivers ---- */
+        /* ---- recvonly transceivers ---- */
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
         pc.ontrack = (event) => {
             console.log("Track received:", event.track.kind);
 
+            if (event.receiver) {
+                try { event.receiver.playoutDelayHint = 0; } catch(e) {}
+                try { event.receiver.jitterBufferTarget = 0; } catch(e) {}
+            }
+
             if (!videoEl.srcObject) {
                 videoEl.srcObject = event.streams[0];
+            }
+        };
+
+        /* ---- DataChannel para medir latencia ---- */
+        metricsChannel = pc.createDataChannel("metrics", { ordered: false });
+
+        metricsChannel.onopen = () => {
+            console.log("Metrics DataChannel open");
+            latencyInterval = setInterval(sendLatencyPing, 5000);
+        };
+
+        metricsChannel.onclose = () => {
+            console.log("Metrics DataChannel closed");
+            if (latencyInterval) clearInterval(latencyInterval);
+        };
+
+        metricsChannel.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === "latency_pong") {
+                    const rtt = performance.now() - data.timestamp;
+                    console.log("RTT:", rtt.toFixed(1), "ms");
+
+                    latencyDisplay.textContent = "RTT: " + rtt.toFixed(1) + " ms";
+
+                    // Reportar al servidor para Prometheus
+                    if (metricsChannel.readyState === "open") {
+                        metricsChannel.send(JSON.stringify({
+                            type: "latency_report",
+                            latency: rtt
+                        }));
+                    }
+                }
+            } catch (e) {
+                console.error("Error parsing pong:", e);
             }
         };
 
@@ -101,6 +117,15 @@
         await pc.setRemoteDescription(answer);
 
         console.log("WebRTC signaling completed");
+    }
+
+    function sendLatencyPing() {
+        if (metricsChannel && metricsChannel.readyState === "open") {
+            metricsChannel.send(JSON.stringify({
+                type: "latency_ping",
+                timestamp: performance.now()
+            }));
+        }
     }
 
     initWebRTC().catch(e => {
