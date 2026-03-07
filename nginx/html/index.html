@@ -13,7 +13,7 @@
        autoplay
        playsinline
        controls
-       style="width:80%;height:auto;margin:0 auto;display:block;background:black">
+       style="width:80%;height:auto;margin:5em auto;display:block;background:black">
 
 </video>
 
@@ -79,12 +79,6 @@
         pc.ontrack = (event) => {
             console.log("Track received:", event.track.kind);
 
-            if (event.track.kind === 'video' && event.receiver) {
-                // Reducir jitter buffer (Chrome)
-                event.receiver.playoutDelayHint = 0;
-                // O más agresivo:
-                event.receiver.jitterBufferTarget = 0;
-            }
             if (!videoEl.srcObject) {
                 videoEl.srcObject = event.streams[0];
             }
