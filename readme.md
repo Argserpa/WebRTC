@@ -39,3 +39,7 @@ servidor de medios con WebRTC
 ```
 
 docker network create -d bridge monitoring_network
+
+docker exec -it hls-web "/bin/bash"
+docker cp hls-web:/var/www/recordings .
+docker exec video-streamer rm -rf /recordings/*
