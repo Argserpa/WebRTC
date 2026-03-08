@@ -26,21 +26,21 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-# ================== ENV ==================
-INPUT = os.getenv("INPUT", "/dev/video0")
+# =================== ENV ====================
 USE_NVENC = os.getenv("USE_NVENC", "false").lower() in ("1", "true", "yes")
 HLS_DIR = os.getenv("HLS_DIR", "/hls")
 RECORD_DIR = os.getenv("RECORD_DIR", "/recordings")
 UDP_PORT = int(os.getenv("UDP_PORT", "10001"))
-SCALE = os.getenv("VIDEO_SCALE", "640:360")
 SEGMENT_DURATION = int(os.getenv("SEGMENT_DURATION", "1800"))
+FFMPEG_LOOP_RESTART_DELAY = 2
 
 os.makedirs(HLS_DIR, exist_ok=True)
 os.makedirs(RECORD_DIR, exist_ok=True)
 
-FFMPEG_LOOP_RESTART_DELAY = 2
+# ========= SYSTEM DEPENDENTS  =================
 VIDEO_DEVICE = os.getenv("VIDEO_DEVICE", "/dev/video0")
 AUDIO_DEVICE = os.getenv("AUDIO_DEVICE", "plughw:1,0")
+SCALE = os.getenv("VIDEO_SCALE", "1280x720")
 
 
 # ================== FFMPEG ==================
@@ -61,12 +61,12 @@ def build_ffmpeg_cmd():
     Both outputs are mpegts, so no format mismatch issues.
     .ts files are always valid — no moov atom, no finalization needed.
     """
-    if INPUT.startswith("/dev/"):
-        video_input = ["-f", "v4l2", "-video_size", "1280x720", "-framerate", "10", "-i", INPUT]
+    if VIDEO_DEVICE.startswith("/dev/"):
+        video_input = ["-f", "v4l2", "-video_size", "1280x720", "-framerate", "10", "-i", VIDEO_DEVICE]
     else:
-        video_input = ["-re", "-i", INPUT]
+        video_input = ["-re", "-i", VIDEO_DEVICE]
 
-    audio_input = ["-f", "alsa", "-ac", "1", "-i", "plughw:1,0"]
+    audio_input = ["-f", "alsa", "-ac", "1", "-i", AUDIO_DEVICE]
     rec_dir = get_today_recording_dir()
 
     tee_output = (
@@ -98,7 +98,7 @@ def build_ffmpeg_cmd():
 
 
 async def ffmpeg_runner():
-    """Ejecuta FFmpeg en bucle. Reinicia a medianoche para nuevo directorio."""
+    """Runs FFmpeg in a loop. Restarts at midnight and changes recording directory."""
     while True:
         cmd = build_ffmpeg_cmd()
         start_date = date.today()

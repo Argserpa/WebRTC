@@ -3,7 +3,7 @@ services:
     build: ./streamer
     container_name: video-streamer
     privileged: true
-    network_mode: host          # ← añade esto
+    network_mode: host
     devices:
       - "/dev/video0:/dev/video0"
       - "/dev/video1:/dev/video1"
