@@ -42,6 +42,13 @@ FFMPEG_LOOP_RESTART_DELAY = 2
 VIDEO_DEVICE = os.getenv("VIDEO_DEVICE", "/dev/video0")
 AUDIO_DEVICE = os.getenv("AUDIO_DEVICE", "plughw:1,0")
 
+# ================== RECORDING STATE ==================
+recording_enabled = False
+# Event to signal FFmpeg to restart when recording state changes
+ffmpeg_restart_event = asyncio.Event()
+# Reference to current FFmpeg process for clean shutdown
+ffmpeg_process = None
+
 
 # ================== FFMPEG ==================
 def get_today_recording_dir():
@@ -54,12 +61,8 @@ def get_today_recording_dir():
 def build_ffmpeg_cmd():
     """
     Builds FFmpeg command as a list.
-    Uses tee muxer with TWO mpegts outputs:
-      - Output 1: UDP for live streaming
-      - Output 2: segmented .ts files for recordings
-
-    Both outputs are mpegts, so no format mismatch issues.
-    .ts files are always valid — no moov atom, no finalization needed.
+    If recording_enabled: uses tee muxer → UDP + segmented .ts
+    If not: outputs only to UDP
     """
     if INPUT.startswith("/dev/"):
         video_input = ["-f", "v4l2", "-video_size", "1280x720", "-framerate", "10", "-i", INPUT]
@@ -67,30 +70,43 @@ def build_ffmpeg_cmd():
         video_input = ["-re", "-i", INPUT]
 
     audio_input = ["-f", "alsa", "-ac", "1", "-i", "plughw:1,0"]
-    rec_dir = get_today_recording_dir()
 
-    tee_output = (
-        f"[f=mpegts]udp://127.0.0.1:{UDP_PORT}"
-        f"|"
-        f"[f=segment"
-        f":segment_time={SEGMENT_DURATION}"
-        f":segment_format=mpegts"
-        f":strftime=1"
-        f":reset_timestamps=1"
-        f"]{rec_dir}/%H-%M-%S.ts"
-    )
-
-    cmd = [
-        "ffmpeg", "-hide_banner", "-y", "-stats", "-loglevel", "warning",
-        *video_input,
-        *audio_input,
+    encode_args = [
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-pix_fmt", "yuv420p",
         "-g", "50",
         "-c:a", "aac", "-ar", "48000", "-ac", "1",
-        "-f", "tee",
-        tee_output,
+    ]
+
+    if recording_enabled:
+        rec_dir = get_today_recording_dir()
+        tee_output = (
+            f"[f=mpegts]udp://127.0.0.1:{UDP_PORT}"
+            f"|"
+            f"[f=segment"
+            f":segment_time={SEGMENT_DURATION}"
+            f":segment_format=mpegts"
+            f":strftime=1"
+            f":reset_timestamps=1"
+            f"]{rec_dir}/%H-%M-%S.ts"
+        )
+        output_args = ["-f", "tee", tee_output]
+        logging.info("FFmpeg mode: STREAMING + RECORDING → %s", rec_dir)
+    else:
+        output_args = [
+            "-muxdelay", "0", "-muxpreload", "0",
+            "-f", "mpegts", "-flush_packets", "1", "-pkt_size", "1316",
+            f"udp://127.0.0.1:{UDP_PORT}",
+        ]
+        logging.info("FFmpeg mode: STREAMING ONLY (no recording)")
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-y", "-stats", "-loglevel", "warning",
+        *video_input,
+        *audio_input,
+        *encode_args,
+        *output_args,
     ]
 
     logging.info("Generated FFmpeg command: %s", cmd)
@@ -98,8 +114,16 @@ def build_ffmpeg_cmd():
 
 
 async def ffmpeg_runner():
-    """Ejecuta FFmpeg en bucle. Reinicia a medianoche para nuevo directorio."""
+    """
+    Runs FFmpeg in a loop. Restarts when:
+    - FFmpeg exits (crash or error)
+    - Date changes (midnight → new recording directory)
+    - ffmpeg_restart_event is set (recording toggle)
+    """
+    global ffmpeg_process
+
     while True:
+        ffmpeg_restart_event.clear()
         cmd = build_ffmpeg_cmd()
         start_date = date.today()
 
@@ -110,30 +134,40 @@ async def ffmpeg_runner():
 
             ffmpeg_running.set(1)
 
-            process = await asyncio.create_subprocess_exec(
+            ffmpeg_process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
                 env=os.environ.copy()
             )
-            logging.info("FFmpeg PID %s", process.pid)
+            logging.info("FFmpeg PID %s", ffmpeg_process.pid)
 
             stream_id = "main"
             monitor_task = asyncio.create_task(
-                monitor_ffmpeg_stream(process, stream_id)
+                monitor_ffmpeg_stream(ffmpeg_process, stream_id)
             )
 
+            # Wait for: process exit, date change, or restart signal
             while True:
-                if process.returncode is not None:
+                if ffmpeg_process.returncode is not None:
                     break
-                if date.today() != start_date:
-                    logging.info("Date changed, restarting FFmpeg for new recording directory")
-                    process.terminate()
+                if ffmpeg_restart_event.is_set():
+                    logging.info("Recording state changed, restarting FFmpeg")
+                    ffmpeg_process.terminate()
                     try:
-                        await asyncio.wait_for(process.wait(), timeout=5)
+                        await asyncio.wait_for(ffmpeg_process.wait(), timeout=5)
                     except asyncio.TimeoutError:
-                        process.kill()
-                        await process.wait()
+                        ffmpeg_process.kill()
+                        await ffmpeg_process.wait()
+                    break
+                if recording_enabled and date.today() != start_date:
+                    logging.info("Date changed, restarting FFmpeg for new recording directory")
+                    ffmpeg_process.terminate()
+                    try:
+                        await asyncio.wait_for(ffmpeg_process.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        ffmpeg_process.kill()
+                        await ffmpeg_process.wait()
                     break
                 await asyncio.sleep(1)
 
@@ -145,10 +179,12 @@ async def ffmpeg_runner():
                     pass
 
             ffmpeg_running.set(0)
-            logging.info("FFmpeg process exited with code %s", process.returncode)
+            ffmpeg_process = None
+            logging.info("FFmpeg stopped")
 
         except Exception:
             ffmpeg_running.set(0)
+            ffmpeg_process = None
             logging.exception("Error running FFmpeg")
 
         await asyncio.sleep(FFMPEG_LOOP_RESTART_DELAY)
@@ -240,7 +276,37 @@ async def on_shutdown(app):
     logging.info("All peer connections closed")
 
 
-# ================== RECORDINGS API ==================
+# ================== RECORDING API ==================
+async def api_recording_start(request):
+    """POST /api/recording/start → activa la grabación"""
+    global recording_enabled
+    if recording_enabled:
+        return web.json_response({"status": "already_recording", "recording": True})
+
+    recording_enabled = True
+    ffmpeg_restart_event.set()
+    logging.info("Recording STARTED by user")
+    return web.json_response({"status": "started", "recording": True})
+
+
+async def api_recording_stop(request):
+    """POST /api/recording/stop → desactiva la grabación"""
+    global recording_enabled
+    if not recording_enabled:
+        return web.json_response({"status": "already_stopped", "recording": False})
+
+    recording_enabled = False
+    ffmpeg_restart_event.set()
+    logging.info("Recording STOPPED by user")
+    return web.json_response({"status": "stopped", "recording": False})
+
+
+async def api_recording_status(request):
+    """GET /api/recording/status → estado actual de la grabación"""
+    return web.json_response({"recording": recording_enabled})
+
+
+# ================== RECORDINGS BROWSER API ==================
 async def api_recording_dates(request):
     """GET /api/recordings → lista de fechas con grabaciones"""
     dates = []
@@ -278,9 +344,7 @@ async def api_recordings_for_date(request):
                     "name": f,
                     "display_time": display_time,
                     "size_mb": round(stat.st_size / (1024 * 1024), 1),
-                    # URL to the .m3u8 wrapper (for hls.js playback)
                     "url": f"/api/recordings/{date_str}/{f}/playlist.m3u8",
-                    # Direct .ts URL (for download)
                     "download_url": f"/recordings/{date_str}/{f}",
                 })
             except OSError:
@@ -289,11 +353,7 @@ async def api_recordings_for_date(request):
 
 
 async def api_recording_playlist(request):
-    """
-    GET /api/recordings/{date}/{file}/playlist.m3u8
-    Generates a minimal HLS VOD playlist pointing to the .ts file.
-    This lets hls.js play the .ts in the browser.
-    """
+    """GET /api/recordings/{date}/{file}/playlist.m3u8 → HLS VOD wrapper"""
     date_str = request.match_info['date']
     filename = request.match_info['file']
 
@@ -306,10 +366,7 @@ async def api_recording_playlist(request):
     if not os.path.isfile(file_path):
         return web.Response(text="Not found", status=404)
 
-    # Get approximate duration from file size and bitrate estimate
-    # Better: use a large duration, hls.js will handle the actual end
     file_size = os.path.getsize(file_path)
-    # Estimate: ~500kbps total → duration ≈ size / 62500
     estimated_duration = max(int(file_size / 62500), SEGMENT_DURATION)
 
     ts_url = f"/recordings/{date_str}/{filename}"
@@ -337,6 +394,11 @@ async def init_app():
     app = web.Application()
     app.router.add_post("/offer", offer)
     app.router.add_get("/metrics", metrics)
+    # Recording control
+    app.router.add_post("/api/recording/start", api_recording_start)
+    app.router.add_post("/api/recording/stop", api_recording_stop)
+    app.router.add_get("/api/recording/status", api_recording_status)
+    # Recordings browser
     app.router.add_get("/api/recordings", api_recording_dates)
     app.router.add_get("/api/recordings/{date}", api_recordings_for_date)
     app.router.add_get("/api/recordings/{date}/{file}/playlist.m3u8", api_recording_playlist)
@@ -392,6 +454,7 @@ async def main():
     logging.info("WebRTC signaling server running on http://0.0.0.0:8081")
     logging.info("Recordings directory: %s", RECORD_DIR)
     logging.info("Segment duration: %d seconds", SEGMENT_DURATION)
+    logging.info("Recording initially: %s", "ON" if recording_enabled else "OFF")
     await asyncio.Event().wait()
 
 

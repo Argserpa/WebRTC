@@ -67,3 +67,53 @@
     border-radius: 8px;
     border: 1px solid rgba(52, 211, 153, 0.2);
 }
+
+/* ---- RECORDING BUTTON ---- */
+.rec-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+}
+
+.rec-btn:hover {
+    background: var(--surface-2);
+}
+
+.rec-btn .rec-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: all 0.3s;
+}
+
+.rec-btn.recording {
+    border-color: var(--danger);
+    background: rgba(255, 92, 92, 0.1);
+    color: var(--danger);
+}
+
+.rec-btn.recording .rec-dot {
+    background: var(--danger);
+    animation: rec-pulse 1.2s ease-in-out infinite;
+}
+
+.rec-btn.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+@keyframes rec-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+}

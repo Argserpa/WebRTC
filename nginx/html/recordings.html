@@ -138,10 +138,7 @@
         const video = document.getElementById('videoPlayer');
         const container = document.getElementById('playerContainer');
 
-        if (currentHls) {
-            currentHls.destroy();
-            currentHls = null;
-        }
+        if (currentHls) { currentHls.destroy(); currentHls = null; }
 
         document.querySelectorAll('.recording-card.playing').forEach(el => el.classList.remove('playing'));
         cardEl.classList.add('playing');
@@ -150,12 +147,8 @@
             currentHls = new Hls();
             currentHls.loadSource(file.url);
             currentHls.attachMedia(video);
-            currentHls.on(Hls.Events.MANIFEST_PARSED, () => {
-                video.play().catch(() => {});
-            });
-            currentHls.on(Hls.Events.ERROR, (event, data) => {
-                console.error('HLS error:', data);
-            });
+            currentHls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+            currentHls.on(Hls.Events.ERROR, (event, data) => { console.error('HLS error:', data); });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = file.url;
             video.play().catch(() => {});
@@ -169,10 +162,7 @@
 
     function closePlayer() {
         const video = document.getElementById('videoPlayer');
-        if (currentHls) {
-            currentHls.destroy();
-            currentHls = null;
-        }
+        if (currentHls) { currentHls.destroy(); currentHls = null; }
         video.pause();
         video.removeAttribute('src');
         document.getElementById('playerContainer').classList.remove('visible');

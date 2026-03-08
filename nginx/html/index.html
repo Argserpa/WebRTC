@@ -22,6 +22,10 @@
     <video id="video" autoplay playsinline controls></video>
     <div class="controls">
         <button onclick="startPlayback()">&#9654; Start playback</button>
+        <button class="rec-btn" id="recBtn" onclick="toggleRecording()">
+            <span class="rec-dot"></span>
+            <span id="recLabel">REC</span>
+        </button>
         <span class="latency-badge" id="latencyDisplay">RTT: --</span>
     </div>
 </div>
@@ -32,11 +36,49 @@
     let latencyInterval;
     const videoEl = document.getElementById('video');
     const latencyDisplay = document.getElementById('latencyDisplay');
+    const recBtn = document.getElementById('recBtn');
+    const recLabel = document.getElementById('recLabel');
 
+    // ---- PLAYBACK ----
     async function startPlayback() {
         try { await videoEl.play(); } catch (e) { console.warn("User gesture required:", e); }
     }
 
+    // ---- RECORDING TOGGLE ----
+    async function fetchRecordingStatus() {
+        try {
+            const resp = await fetch('/api/recording/status');
+            const data = await resp.json();
+            updateRecButton(data.recording);
+        } catch (e) {
+            console.error('Error fetching recording status:', e);
+        }
+    }
+
+    function updateRecButton(isRecording) {
+        recBtn.classList.toggle('recording', isRecording);
+        recBtn.classList.remove('loading');
+        recLabel.textContent = isRecording ? 'STOP REC' : 'REC';
+    }
+
+    async function toggleRecording() {
+        const isRecording = recBtn.classList.contains('recording');
+        const endpoint = isRecording ? '/api/recording/stop' : '/api/recording/start';
+
+        recBtn.classList.add('loading');
+        recLabel.textContent = '...';
+
+        try {
+            const resp = await fetch(endpoint, { method: 'POST' });
+            const data = await resp.json();
+            updateRecButton(data.recording);
+        } catch (e) {
+            console.error('Error toggling recording:', e);
+            recBtn.classList.remove('loading');
+        }
+    }
+
+    // ---- WEBRTC ----
     async function initWebRTC() {
         pc = new RTCPeerConnection({
             iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -93,6 +135,8 @@
         }
     }
 
+    // ---- INIT ----
+    fetchRecordingStatus();
     initWebRTC().catch(e => { console.error(e); alert("WebRTC init failed: " + e); });
 </script>
 </body>
