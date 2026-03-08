@@ -180,7 +180,7 @@ async def offer(request):
 
     logging.info("WebRTC offer received from client")
 
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(configuration=config)
     pcs.add(pc)
     webrtc_offers.inc()
     webrtc_peers.inc()

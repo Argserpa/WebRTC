@@ -3,6 +3,7 @@ services:
     build: ./streamer
     container_name: video-streamer
     privileged: true
+    network_mode: host          # ← añade esto
     devices:
       - "/dev/video0:/dev/video0"
       - "/dev/video1:/dev/video1"
@@ -18,14 +19,9 @@ services:
     volumes:
       - hls-data:/var/www/hls
       - recordings:/recordings
-    expose:
-      - "8081"
     deploy:
       restart_policy:
         condition: any
-    networks:
-      - monitoring_network
-      - streaming_network
 
   web:
     build: ./nginx
@@ -33,7 +29,7 @@ services:
     depends_on:
       - streamer
     ports:
-      - "8080:80"
+      - "8080:8080"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/html:/usr/share/nginx/html:ro
@@ -46,6 +42,8 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # resuelve en Linux
     environment:
       - GF_LOG_LEVEL=error
     ports:
