@@ -1,0 +1,140 @@
+# ── PVC: HLS data (compartido con el pod web) ──────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hls-data
+  namespace: streaming
+spec:
+  accessModes:
+    - ReadWriteOnce   # minikube es single-node: ambos pods pueden montarlo
+  resources:
+    requests:
+      storage: 2Gi
+---
+# ── PVC: Grabaciones ───────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recordings
+  namespace: streaming
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+# ── ConfigMap: variables de entorno del streamer ───────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamer-config
+  namespace: streaming
+data:
+  INPUT: "/dev/video0"
+  USE_NVENC: "false"
+  HLS_DIR: "/var/www/hls"
+  RECORD_DIR: "/recordings"
+  UDP_PORT: "10000"
+  VIDEO_SCALE: "1280:720"
+  # TURN server — apuntar a la IP del nodo Minikube o a coturn externo
+  # Obtener IP con: minikube ip
+  TURN_SERVER_HOST: "192.168.49.2"   # ← reemplazar con: $(minikube ip)
+  TURN_SERVER_PORT: "3478"
+  TURN_SERVER_USER: "turnuser"
+  TURN_SERVER_PASS: "turnpass"
+---
+# ── Deployment: video-streamer ─────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-streamer
+  namespace: streaming
+  labels:
+    app: video-streamer
+spec:
+  replicas: 1   # WebRTC stateful — no escalar horizontalmente
+  selector:
+    matchLabels:
+      app: video-streamer
+  template:
+    metadata:
+      labels:
+        app: video-streamer
+    spec:
+      # FIX: hostNetwork permite que aiortc genere ICE candidates con la IP
+      # real del nodo en lugar de IPs internas del pod (10.x.x.x), que el
+      # navegador no puede alcanzar desde fuera del cluster.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: video-streamer
+          image: video-streamer:latest
+          imagePullPolicy: Never   # imagen local de minikube
+          envFrom:
+            - configMapRef:
+                name: streamer-config
+          ports:
+            - name: signaling
+              containerPort: 8081
+              protocol: TCP
+          securityContext:
+            privileged: true   # imprescindible para v4l2 y ALSA
+          volumeMounts:
+            - name: hls-data
+              mountPath: /var/www/hls
+            - name: recordings
+              mountPath: /recordings
+            - name: video0
+              mountPath: /dev/video0
+            - name: snd
+              mountPath: /dev/snd
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: hls-data
+          persistentVolumeClaim:
+            claimName: hls-data
+        - name: recordings
+          persistentVolumeClaim:
+            claimName: recordings
+        - name: video0
+          hostPath:
+            path: /dev/video0
+            type: CharDevice
+        - name: snd
+          hostPath:
+            path: /dev/snd
+            type: Directory
+---
+# ── Service: video-streamer ────────────────────────────────────────────────
+# LoadBalancer para que el navegador pueda llegar al /offer endpoint
+# (WebRTC ICE necesita IP pública real, no ClusterIP)
+# Requiere: minikube tunnel (en terminal separada)
+apiVersion: v1
+kind: Service
+metadata:
+  name: video-streamer
+  namespace: streaming
+  labels:
+    app: video-streamer
+spec:
+  type: LoadBalancer
+  selector:
+    app: video-streamer
+  ports:
+    - name: signaling
+      port: 8081
+      targetPort: 8081
+      protocol: TCP

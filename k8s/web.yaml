@@ -1,0 +1,65 @@
+# ── Deployment: hls-web (nginx) ────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hls-web
+  namespace: streaming
+  labels:
+    app: hls-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hls-web
+  template:
+    metadata:
+      labels:
+        app: hls-web
+    spec:
+      containers:
+        - name: hls-web
+          image: hls-web:latest
+          imagePullPolicy: Never   # imagen local de minikube
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: hls-data
+              mountPath: /var/www/hls
+              readOnly: true
+            - name: recordings
+              mountPath: /var/www/recordings
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: hls-data
+          persistentVolumeClaim:
+            claimName: hls-data
+        - name: recordings
+          persistentVolumeClaim:
+            claimName: recordings
+---
+# ── Service: hls-web ──────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: hls-web
+  namespace: streaming
+  labels:
+    app: hls-web
+spec:
+  type: LoadBalancer   # requiere: minikube tunnel
+  selector:
+    app: hls-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP

@@ -1,0 +1,95 @@
+# ── ConfigMap: configuración de coturn ────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coturn-config
+  namespace: streaming
+data:
+  turnserver.conf: |
+    listening-port=3478
+    tls-listening-port=5349
+    # En minikube usar la IP del nodo: $(minikube ip)
+    # Descomentar y rellenar tras obtener la IP:
+    external-ip=192.168.49.2
+    user=turnuser:turnpass
+    realm=yourdomain.com
+    verbose
+    min-port=49152
+    max-port=65535
+    allowed-peer-ip=0.0.0.0-255.255.255.255
+---
+# ── Deployment: coturn ────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coturn
+  namespace: streaming
+  labels:
+    app: coturn
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coturn
+  template:
+    metadata:
+      labels:
+        app: coturn
+    spec:
+      containers:
+        - name: coturn
+          image: coturn/coturn:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-c"
+            - "/etc/turnserver.conf"
+          ports:
+            - name: turn-udp
+              containerPort: 3478
+              protocol: UDP
+            - name: turn-tcp
+              containerPort: 3478
+              protocol: TCP
+            - name: turns
+              containerPort: 5349
+              protocol: TCP
+          volumeMounts:
+            - name: coturn-config
+              mountPath: /etc/turnserver.conf
+              subPath: turnserver.conf
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+      volumes:
+        - name: coturn-config
+          configMap:
+            name: coturn-config
+---
+# ── Service: coturn ───────────────────────────────────────────────────────
+# NodePort: los ICE candidates del navegador deben poder llegar aquí
+apiVersion: v1
+kind: Service
+metadata:
+  name: coturn
+  namespace: streaming
+  labels:
+    app: coturn
+spec:
+  type: NodePort
+  selector:
+    app: coturn
+  ports:
+    - name: turn-udp
+      port: 3478
+      targetPort: 3478
+      nodePort: 30478
+      protocol: UDP
+    - name: turn-tcp
+      port: 3478
+      targetPort: 3478
+      nodePort: 30479
+      protocol: TCP

@@ -70,3 +70,16 @@ Para comprobar si está grabando imágenes dentro del contenedor. Se ingresa al 
 ``` bash    
     docker exec video-streamer rm -rf /recordings/*
 ```
+
+
+## 3. Construir y cargar las imágenes en Minikube
+
+```bash
+# Construir con Docker normal
+docker build -t video-streamer:latest ./streamer
+docker build -t hls-web:latest ./nginx
+
+# Cargar en el daemon de Minikube
+minikube image load video-streamer:latest
+minikube image load hls-web:latest
+```

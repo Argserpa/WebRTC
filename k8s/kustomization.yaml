@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: streaming
+
+resources:
+  - 00-namespace.yaml
+  - 01-secrets.yaml
+  - streamer.yaml
+  - web.yaml
+  - coturn.yaml
+  - prometheus.yaml
+  - grafana.yaml
+  - node-exporter.yaml
