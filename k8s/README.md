@@ -4,176 +4,6 @@
 
 - [minikube](https://minikube.sigs.k8s.io/docs/start/) >= 1.32
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) >= 1.29
-- Docker (para construir las imágenes)
-- Host Linux con `/dev/video0` y `/dev/snd` disponibles
-
----
-
-## 1. Arrancar Minikube
-
-```bash
-minikube start --driver=docker --cpus=4 --memory=4096
-```
-
-> ⚠️ El streamer necesita acceso a dispositivos del host (`/dev/video0`, `/dev/snd`).
-> Minikube con driver `docker` monta el host automáticamente en el nodo.
-> Si los dispositivos no aparecen dentro del nodo, usa `--driver=kvm2` o `--driver=none`.
-
----
-
-## 2. Obtener la IP del nodo y actualizar la config
-
-```bash
-minikube ip   # ej: 192.168.49.2
-```
-
-Editar `streamer.yaml` → ConfigMap `streamer-config`:
-```yaml
-TURN_SERVER_HOST: "192.168.49.2"   # ← poner aquí la IP de minikube ip
-```
-
-Editar `coturn.yaml` → ConfigMap `coturn-config`:
-```yaml
-# external-ip=192.168.49.2         # ← descomentar y poner la misma IP
-```
-
----
-
-## 3. Construir y cargar las imágenes en Minikube
-
-```bash
-# Construir con Docker normal
-docker build -t video-streamer:latest ./streamer
-docker build -t hls-web:latest ./nginx
-
-# Cargar en el daemon de Minikube
-minikube image load video-streamer:latest
-minikube image load hls-web:latest
-```
-
-> Con `imagePullPolicy: Never` Kubernetes nunca intentará bajar estas imágenes
-> de un registry externo.
-
----
-
-## 4. Desplegar todo
-
-```bash
-# Desde la carpeta k8s/
-kubectl apply -k .
-
-# O manifest por manifest (mismo orden):
-kubectl apply -f 00-namespace.yaml
-kubectl apply -f 01-secrets.yaml
-kubectl apply -f streamer.yaml
-kubectl apply -f web.yaml
-kubectl apply -f coturn.yaml
-kubectl apply -f prometheus.yaml
-kubectl apply -f grafana.yaml
-kubectl apply -f node-exporter.yaml
-```
-
-Verificar que todos los pods están `Running`:
-```bash
-kubectl get pods -n streaming -w
-```
-
----
-
-## 5. Acceder a los servicios
-
-### Streamer (señalización WebRTC) y Web (HLS) — LoadBalancer
-
-Ambos servicios son `LoadBalancer`. Requieren tunnel en una terminal separada:
-
-```bash
-# Mantener abierta mientras se usa
-minikube tunnel
-```
-
-Obtener las IPs asignadas:
-```bash
-kubectl get svc -n streaming
-```
-
-| Servicio        | Puerto | URL                          |
-|-----------------|--------|------------------------------|
-| `hls-web`       | 80     | `http://<EXTERNAL-IP>`       |
-| `video-streamer`| 8081   | `http://<EXTERNAL-IP>:8081`  |
-
-> ⚠️ El HTML del cliente usa `http://${location.hostname}:8081/offer`.
-> Si `hls-web` y `video-streamer` tienen IPs distintas, actualizar el JS
-> para apuntar explícitamente a la IP del streamer.
-
-### Grafana — NodePort
-
-```bash
-minikube service grafana -n streaming
-# o: http://<minikube ip>:30300
-```
-
-Credenciales: `admin` / `prom_admin`
-
-### TURN server — NodePort
-
-- UDP: `<minikube ip>:30478`
-- TCP: `<minikube ip>:30479`
-
-Actualizar `webrtc.html` / `index.html` para usar este servidor TURN:
-```js
-{
-  urls: "turn:<minikube ip>:30478",
-  username: "turnuser",
-  credential: "turnpass"
-}
-```
-
-### Prometheus — port-forward (acceso puntual)
-
-```bash
-kubectl port-forward svc/prometheus 9090:9090 -n streaming
-# → http://localhost:9090
-```
-
----
-
-## 6. Operaciones habituales
-
-```bash
-# Ver logs del streamer
-kubectl logs -f deployment/video-streamer -n streaming
-
-# Ver logs del nginx HLS
-kubectl logs -f deployment/hls-web -n streaming
-
-# Recargar config de Prometheus sin reiniciar
-kubectl port-forward svc/prometheus 9090:9090 -n streaming &
-curl -X POST http://localhost:9090/-/reload
-
-# Eliminar todo el despliegue
-kubectl delete namespace streaming
-```
-
----
-
-## Diferencias respecto al proyecto RTPM
-
-| Aspecto | RTPM | WebRTC |
-|---|---|---|
-| Imagen principal | `nginx-rtmp-server` | `video-streamer` + `hls-web` |
-| Exporter separado | `rtmp-exporter` + `nginx-exporter` | No necesario — `/metrics` en el streamer |
-| Dispositivos host | No | `/dev/video0` + `/dev/snd` (privileged) |
-| Volumen compartido | No | PVC `hls-data` entre streamer y web |
-| TURN server | No | `coturn` (NodePort 30478) |
-
-
-
-# WebRTC — Kubernetes Setup
-
-## Requisitos
-
-- [minikube](https://minikube.sigs.k8s.io/docs/start/) >= 1.32
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) >= 1.29
 - Docker
 - Host Linux con `/dev/video0` y `/dev/snd` disponibles
 
@@ -225,6 +55,18 @@ minikube image load hls-web:latest
 # Desde la carpeta k8s/
 kubectl apply -k .
 ```
+Otra opción es ir uno a uno, por si falla algo:
+```bash
+# manifest por manifest (mismo orden):
+kubectl apply -f 00-namespace.yaml
+kubectl apply -f 01-secrets.yaml
+kubectl apply -f streamer.yaml
+kubectl apply -f web.yaml
+kubectl apply -f coturn.yaml
+kubectl apply -f prometheus.yaml
+kubectl apply -f grafana.yaml
+kubectl apply -f node-exporter.yaml
+```
 
 Verificar que todos los pods están Running:
 ```bash
@@ -241,10 +83,38 @@ Con el driver docker en Linux, los NodePorts y LoadBalancer IPs no son
 accesibles directamente desde el host. Usar port-forward:
 
 ```bash
-kubectl port-forward svc/hls-web 8080:80 -n streaming
+kubectl port-forward --address 0.0.0.0 svc/video-streamer 8081:8081 -n streaming
+```
+y en otra shell:
+```bash
+kubectl port-forward --address 0.0.0.0 svc/hls-web 8080:80 -n streaming
 ```
 
 Abrir: http://localhost:8080
+
+### Streamer (señalización WebRTC) y Web (HLS) — LoadBalancer
+
+Ambos servicios son `LoadBalancer`. Requieren tunnel en una terminal separada:
+
+```bash
+# Mantener abierta mientras se usa
+minikube tunnel
+```
+
+Obtener las IPs asignadas:
+```bash
+kubectl get svc -n streaming
+```
+
+| Servicio        | Puerto | URL                          |
+|-----------------|--------|------------------------------|
+| `hls-web`       | 80     | `http://<EXTERNAL-IP>`       |
+| `video-streamer`| 8081   | `http://<EXTERNAL-IP>:8081`  |
+
+> ⚠️ El HTML del cliente usa `http://${location.hostname}:8081/offer`.
+> Si `hls-web` y `video-streamer` tienen IPs distintas, actualizar el JS
+> para apuntar explícitamente a la IP del streamer.
+
 
 ### Grafana — NodePort
 
@@ -259,6 +129,20 @@ Credenciales: admin / prom_admin
 
 ```bash
 kubectl port-forward svc/prometheus 9090:9090 -n streaming
+```
+
+### TURN server — NodePort (opciónal, revisar más adelante)
+
+- UDP: `<minikube ip>:30478`
+- TCP: `<minikube ip>:30479`
+
+Actualizar `webrtc.html` / `index.html` para usar este servidor TURN:
+```js
+{
+  urls: "turn:<minikube ip>:30478",
+  username: "turnuser",
+  credential: "turnpass"
+}
 ```
 
 ---
@@ -277,11 +161,27 @@ docker build -t hls-web:v2 ./nginx
 minikube image load hls-web:v2
 kubectl set image deployment/hls-web hls-web=hls-web:v2 -n streaming
 
+# Recargar config de Prometheus sin reiniciar
+kubectl port-forward svc/prometheus 9090:9090 -n streaming &
+curl -X POST http://localhost:9090/-/reload
+
 # Eliminar todo el despliegue
 kubectl delete namespace streaming
 ```
 
 ---
+
+
+| Aspecto | RTPM | WebRTC |
+|---|---|---|
+| Imagen principal | `nginx-rtmp-server` | `video-streamer` + `hls-web` |
+| Exporter separado | `rtmp-exporter` + `nginx-exporter` | No necesario — `/metrics` en el streamer |
+| Dispositivos host | No | `/dev/video0` + `/dev/snd` (privileged) |
+| Volumen compartido | No | PVC `hls-data` entre streamer y web |
+
+
+---
+
 
 ## FAQ — Problemas encontrados en el despliegue inicial
 
@@ -308,9 +208,9 @@ Lección: Si kubectl exec -- cat /etc/nginx/nginx.conf muestra la config
 correcta pero el contenedor sigue usando la antigua, minikube tiene la imagen
 cacheada. Solución: usar un tag nuevo (v2, v3...) en lugar de :latest.
 
-    docker build -t hls-web:v4 ./nginx
-    minikube image load hls-web:v4
-    kubectl set image deployment/hls-web hls-web=hls-web:v4 -n streaming
+    docker build -t hls-web:v5 ./nginx
+    minikube image load hls-web:v5
+    kubectl set image deployment/hls-web hls-web=hls-web:v5 -n streaming
     kubectl rollout status deployment/hls-web -n streaming
 
 ---
@@ -354,3 +254,68 @@ kubectl port-forward svc/hls-web 8080:80 -n streaming
 
 minikube tunnel teóricamente lo resuelve pero en algunos entornos no funciona
 con el driver docker.
+
+---
+
+## Cambios post-despliegue inicial
+
+### nginx.conf — doble configuración Docker Compose / Minikube
+
+El `nginx.conf` tiene los `proxy_pass` comentados por entorno. Para cambiar
+entre Docker Compose y Minikube, descomentar/comentar las líneas correspondientes
+y reconstruir la imagen `hls-web`.
+
+**Docker Compose** (activo por defecto):
+```nginx
+proxy_pass http://localhost:8081;
+```
+
+**Minikube / Kubernetes**:
+```nginx
+proxy_pass http://video-streamer:8081;
+```
+
+El motivo: en Docker Compose el streamer usa `network_mode: host`, así que nginx
+no puede resolver el nombre `video-streamer` por DNS de Docker — debe usar
+`localhost`. En Kubernetes el nombre `video-streamer` es el Service de K8s y
+sí se resuelve correctamente.
+
+---
+
+### ❌ host not found in upstream "video-streamer"
+
+**Causa:** El streamer tiene `network_mode: host` en `docker-compose.yml`, lo que
+lo saca de la red Docker. Nginx no puede resolver el nombre `video-streamer`
+porque ese contenedor no tiene interfaz en ninguna red Docker.
+
+**Fix:** En `nginx.conf` usar `localhost` en lugar del nombre del servicio
+cuando se despliega con Docker Compose.
+
+---
+
+### ❌ Las grabaciones devuelven 404
+
+**Causa:** El pod `hls-web` no tenía montado el PVC `recordings`. Los archivos
+`.ts` los escribe el streamer en su PVC, pero nginx no los podía leer porque
+ese volumen no estaba disponible en el pod web.
+
+**Fix aplicado en `web.yaml`:** añadido el PVC `recordings` montado en
+`/var/www/recordings`, que coincide con el `alias` del `location /recordings/`
+en el `nginx.conf`.
+
+---
+
+### ❌ Imagen cacheada tras kubectl apply o rollout restart
+
+**Causa:** Minikube cachea imágenes por nombre+tag. Cualquier operación que
+reinicie el pod (apply, rollout restart, etc.) puede volver a usar la imagen
+antigua si el tag no cambió.
+
+**Regla:** Cada vez que se reconstruya una imagen para minikube, usar un tag
+nuevo (`v2`, `v3`...) y actualizar el deployment con `kubectl set image`.
+
+```bash
+docker build -t hls-web:vN ./nginx
+minikube image load hls-web:vN
+kubectl set image deployment/hls-web hls-web=hls-web:vN -n streaming
+```
