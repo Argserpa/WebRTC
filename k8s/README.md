@@ -172,15 +172,6 @@ kubectl delete namespace streaming
 ---
 
 
-| Aspecto | RTPM | WebRTC |
-|---|---|---|
-| Imagen principal | `nginx-rtmp-server` | `video-streamer` + `hls-web` |
-| Exporter separado | `rtmp-exporter` + `nginx-exporter` | No necesario — `/metrics` en el streamer |
-| Dispositivos host | No | `/dev/video0` + `/dev/snd` (privileged) |
-| Volumen compartido | No | PVC `hls-data` entre streamer y web |
-
-
----
 
 
 ## FAQ — Problemas encontrados en el despliegue inicial
