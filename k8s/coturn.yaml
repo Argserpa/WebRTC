@@ -1,4 +1,12 @@
-# ── ConfigMap: configuración de coturn ────────────────────────────────────
+#  Servidor TURN/STUN coturn (Kubernetes)
+# Proporciona relay ICE para WebRTC cuando el P2P directo queda bloqueado por NAT.
+# La external-ip del ConfigMap tiene que apuntar a la IP del nodo Minikube
+# para que los ICE candidates anuncien una dirección alcanzable.
+#
+
+#  ConfigMap: configuración de coturn
+# Se inyecta como /etc/turnserver.conf en el contenedor de coturn.
+# Ver coturn/turnserver.conf para la documentación campo a campo.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,8 +16,7 @@ data:
   turnserver.conf: |
     listening-port=3478
     tls-listening-port=5349
-    # En minikube usar la IP del nodo: $(minikube ip)
-    # Descomentar y rellenar tras obtener la IP:
+    # IP del nodo Minikube (la que devuelve 'minikube ip')
     external-ip=192.168.49.2
     user=turnuser:turnpass
     realm=yourdomain.com
@@ -18,7 +25,7 @@ data:
     max-port=65535
     allowed-peer-ip=0.0.0.0-255.255.255.255
 ---
-# ── Deployment: coturn ────────────────────────────────────────────────────
+#  Deployment: coturn
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,7 +34,7 @@ metadata:
   labels:
     app: coturn
 spec:
-  replicas: 1
+  replicas: 1   # el servidor TURN es stateful (allocaciones activas); no escalar horizontalmente
   selector:
     matchLabels:
       app: coturn
@@ -42,7 +49,7 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - "-c"
-            - "/etc/turnserver.conf"
+            - "/etc/turnserver.conf"   # usar el fichero de config inyectado desde el ConfigMap
           ports:
             - name: turn-udp
               containerPort: 3478
@@ -50,13 +57,13 @@ spec:
             - name: turn-tcp
               containerPort: 3478
               protocol: TCP
-            - name: turns
+            - name: turns             # TURNS = TURN sobre TLS
               containerPort: 5349
               protocol: TCP
           volumeMounts:
             - name: coturn-config
               mountPath: /etc/turnserver.conf
-              subPath: turnserver.conf
+              subPath: turnserver.conf   # montar solo esta clave, no el ConfigMap entero
           resources:
             requests:
               cpu: "100m"
@@ -69,8 +76,9 @@ spec:
           configMap:
             name: coturn-config
 ---
-# ── Service: coturn ───────────────────────────────────────────────────────
-# NodePort: los ICE candidates del navegador deben poder llegar aquí
+#  Service: coturn
+# NodePort expone los puertos TURN directamente en el nodo Minikube para que los
+# navegadores fuera del cluster puedan llegar al servidor TURN para allocar ICE candidates.
 apiVersion: v1
 kind: Service
 metadata:
@@ -79,17 +87,17 @@ metadata:
   labels:
     app: coturn
 spec:
-  type: NodePort
+  type: NodePort   # obligatorio: los ICE candidates de los navegadores tienen que alcanzar estos puertos
   selector:
     app: coturn
   ports:
     - name: turn-udp
       port: 3478
       targetPort: 3478
-      nodePort: 30478
+      nodePort: 30478   # acceder en <ip-minikube>:30478 (UDP)
       protocol: UDP
     - name: turn-tcp
       port: 3478
       targetPort: 3478
-      nodePort: 30479
+      nodePort: 30479   # acceder en <ip-minikube>:30479 (TCP)
       protocol: TCP

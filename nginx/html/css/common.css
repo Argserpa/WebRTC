@@ -1,20 +1,32 @@
+/* ─── Estilos compartidos (common.css) ───────────────────────────────────────
+   Importado por index.html (visor en directo) y recordings.html.
+   Define: tokens de diseño, base del body, header, navegación, spinner de carga
+   y estado vacío.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Google Fonts: DM Sans para la UI, JetBrains Mono para valores numéricos/timestamps */
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* Reset: quitar márgenes y padding del navegador; box-sizing global */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ── Tokens de diseño (custom properties) ────────────────────────────────────
+   Toda la paleta en un solo sitio para poder cambiarla fácilmente.
+   Tema oscuro con fondos casi negros y un acento azul. */
 :root {
-    --bg: #0c0e13;
-    --surface: #161921;
-    --surface-2: #1e222d;
-    --border: #2a2f3d;
-    --text: #e4e7ee;
-    --text-dim: #7c839a;
-    --accent: #4e8fff;
-    --accent-soft: rgba(78, 143, 255, 0.12);
-    --danger: #ff5c5c;
-    --green: #34d399;
+    --bg: #0c0e13;                          /* fondo de página — el más oscuro */
+    --surface: #161921;                     /* superficie de tarjetas y header */
+    --surface-2: #1e222d;                   /* superficie elevada (hover, badges) */
+    --border: #2a2f3d;                      /* bordes sutiles entre elementos */
+    --text: #e4e7ee;                        /* texto principal */
+    --text-dim: #7c839a;                    /* texto secundario / atenuado */
+    --accent: #4e8fff;                      /* color de acción (links, estado activo) */
+    --accent-soft: rgba(78, 143, 255, 0.12); /* acento translúcido para fondos */
+    --danger: #ff5c5c;                      /* hover del botón destructivo (cerrar) */
+    --green: #34d399;                       /* indicador live, badge de latencia, estado playing */
 }
 
+/* ── Body ────────────────────────────────────────────────────────────────── */
 body {
     font-family: 'DM Sans', sans-serif;
     background: var(--bg);
@@ -22,7 +34,8 @@ body {
     min-height: 100vh;
 }
 
-/* ---- HEADER ---- */
+/* ── Header ──────────────────────────────────────────────────────────────────
+   Barra superior con el título a la izquierda y los links de navegación a la derecha. */
 .header {
     display: flex;
     align-items: center;
@@ -38,6 +51,8 @@ body {
     letter-spacing: -0.02em;
 }
 
+/* ── Navegación ───────────────────────────────────────────────────────────────
+   Tabs "Live Stream" y "Recordings" en el header. */
 .header-nav a {
     color: var(--text-dim);
     text-decoration: none;
@@ -53,18 +68,20 @@ body {
     background: var(--surface-2);
 }
 
+/* Tab activo: resaltado con el color de acento y fondo suave */
 .header-nav a.active {
     color: var(--accent);
     background: var(--accent-soft);
 }
 
-/* ---- LOADING SPINNER ---- */
+/* ── Spinner de carga ─────────────────────────────────────────────────────────
+   Aparece mientras se espera la respuesta del API (lista de fechas, grabaciones). */
 .loading-spinner {
     display: inline-block;
     width: 20px;
     height: 20px;
     border: 2px solid var(--border);
-    border-top-color: var(--accent);
+    border-top-color: var(--accent);     /* el segmento de color forma el arco giratorio */
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
 }
@@ -73,7 +90,8 @@ body {
     to { transform: rotate(360deg); }
 }
 
-/* ---- EMPTY STATE ---- */
+/* ── Estado vacío ─────────────────────────────────────────────────────────────
+   Se muestra cuando no hay grabaciones o cuando falla la carga de datos. */
 .empty-state {
     text-align: center;
     padding: 80px 20px;

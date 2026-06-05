@@ -1,4 +1,17 @@
-# ── Deployment: hls-web (nginx) ────────────────────────────────────────────
+#  Frontend web Nginx (Kubernetes)
+# Sirve el visor estático HTML/CSS y actúa como proxy inverso hacia el streamer.
+# Comparte los PVCs hls-data y recordings con el pod video-streamer (en solo lectura).
+#
+# Resumen de rutas (definidas en nginx/nginx.conf):
+#   /              → ficheros estáticos (index.html, recordings.html, CSS, imágenes)
+#   /hls/          → segmentos HLS en vivo desde el PVC hls-data
+#   /recordings/   → ficheros .ts grabados desde el PVC recordings
+#   /offer         → proxy a video-streamer:8081 (señalización WebRTC)
+#   /api/          → proxy a video-streamer:8081 (API de metadatos de grabaciones)
+#   /metrics       → proxy a video-streamer:8081 (métricas Prometheus)
+#
+
+#  Deployment: hls-web (nginx)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,18 +32,19 @@ spec:
       containers:
         - name: hls-web
           image: hls-web:latest
-          imagePullPolicy: Never   # imagen local de minikube
+          imagePullPolicy: Never   # usar la imagen local de Minikube (eval $(minikube docker-env))
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
           volumeMounts:
+            # Los dos mounts son de solo lectura: nginx sirve, el streamer escribe
             - name: hls-data
               mountPath: /var/www/hls
-              readOnly: true
+              readOnly: true          # nginx sirve estos ficheros pero nunca los escribe
             - name: recordings
               mountPath: /var/www/recordings
-              readOnly: true
+              readOnly: true          # nginx sirve los .ts para descarga
           resources:
             requests:
               cpu: "100m"
@@ -41,12 +55,15 @@ spec:
       volumes:
         - name: hls-data
           persistentVolumeClaim:
-            claimName: hls-data
+            claimName: hls-data       # mismo PVC que el streamer — datos HLS en vivo compartidos
         - name: recordings
           persistentVolumeClaim:
-            claimName: recordings
+            claimName: recordings     # mismo PVC que el streamer — segmentos grabados compartidos
 ---
-# ── Service: hls-web ──────────────────────────────────────────────────────
+#  Service: hls-web
+# LoadBalancer asigna una IP externa accesible desde el navegador en la LAN.
+# Requiere: minikube tunnel (en una terminal aparte).
+# Acceder al visor en: http://<ip-externa>:80
 apiVersion: v1
 kind: Service
 metadata:
@@ -55,11 +72,11 @@ metadata:
   labels:
     app: hls-web
 spec:
-  type: LoadBalancer   # requiere: minikube tunnel
+  type: LoadBalancer   # acceso externo obligatorio: los navegadores conectan aquí para la UI
   selector:
     app: hls-web
   ports:
     - name: http
-      port: 80
-      targetPort: 8080
+      port: 80          # puerto externo (HTTP estándar)
+      targetPort: 8080  # puerto interno del contenedor definido en nginx.conf
       protocol: TCP

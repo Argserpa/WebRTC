@@ -19,25 +19,41 @@
 </div>
 
 <div class="content">
+    <!-- El elemento video recibe el MediaStream remoto cuando WebRTC está establecido -->
     <video id="video" autoplay playsinline controls></video>
     <div class="controls">
         <button onclick="startPlayback()">&#9654; Start playback</button>
+        <!-- Latencia RTT — se actualiza cada 5 s via el DataChannel de métricas -->
         <span class="latency-badge" id="latencyDisplay">RTT: --</span>
     </div>
 </div>
 
 <script>
-    let pc;
-    let metricsChannel;
-    let latencyInterval;
+    let pc;                  // RTCPeerConnection — una por carga de página
+    let metricsChannel;      // DataChannel para el ping/pong de latencia
+    let latencyInterval;     // handle del setInterval que envía los pings
     const videoEl = document.getElementById('video');
     const latencyDisplay = document.getElementById('latencyDisplay');
 
+    // Algunos navegadores bloquean el autoplay con audio hasta que hay un gesto del usuario.
+    // Este botón fuerza el play() si el navegador lo bloqueó.
     async function startPlayback() {
         try { await videoEl.play(); } catch (e) { console.warn("User gesture required:", e); }
     }
 
+    // ── Conexión WebRTC ───────────────────────────────────────────────────────
+    // initWebRTC monta toda la tubería WebRTC:
+    //   1. Crear RTCPeerConnection con la config ICE
+    //   2. Añadir transceivers en modo recvonly (solo recibimos, no enviamos)
+    //   3. Conectar los tracks entrantes al elemento <video>
+    //   4. Abrir un DataChannel para medir la latencia RTT
+    //   5. Generar la SDP offer y enviarla por POST a /offer (nginx → aiortc)
+    //   6. Aplicar la SDP answer del servidor para completar la negociación
     async function initWebRTC() {
+        // Servidores ICE:
+        //   - Google STUN: descubre la IP pública para intentar P2P directo (gratis, sin relay)
+        //   - openrelay TURN: retransmite el tráfico si el P2P falla por NAT simétrico
+        // Tienen que coincidir con RTCConfiguration en streamer/main.py.
         pc = new RTCPeerConnection({
             iceServers: [
                 { urls: "stun:stun.l.google.com:19302" },
@@ -49,20 +65,37 @@
             ]
         });
 
+        // Log de cambios de estado ICE y de conexión para depuración
         pc.oniceconnectionstatechange = () => console.log("ICE state:", pc.iceConnectionState);
         pc.onconnectionstatechange = () => console.log("Peer state:", pc.connectionState);
 
+        // Los transceivers hay que añadirlos ANTES de crear la offer para que el SDP
+        // incluya las secciones de vídeo y audio. Sin ellos el servidor no tiene tracks
+        // a los que engancharse y devuelve una answer vacía.
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
 
+        // ontrack se dispara cuando llega el MediaStream del servidor.
+        // playoutDelayHint=0 y jitterBufferTarget=0 reducen al mínimo el buffer
+        // para conseguir la menor latencia posible (puede aumentar los cortes en redes lentas).
         pc.ontrack = (event) => {
             if (event.receiver) {
                 try { event.receiver.playoutDelayHint = 0; } catch(e) {}
                 try { event.receiver.jitterBufferTarget = 0; } catch(e) {}
             }
+            // Conectar el primer stream entrante al elemento de vídeo
             if (!videoEl.srcObject) videoEl.srcObject = event.streams[0];
         };
 
+        // ── DataChannel de latencia ───────────────────────────────────────────
+        // Canal ligero para medir el RTT (round-trip time) de forma independiente
+        // a la calidad del stream de vídeo.
+        // Protocolo:
+        //   Navegador → Servidor : { type:"latency_ping",   timestamp: performance.now() }
+        //   Servidor  → Navegador: { type:"latency_pong",   timestamp: <echo del ts del ping> }
+        //   Navegador → Servidor : { type:"latency_report", latency: <rtt_ms> }
+        // El servidor guarda los latency_report en LatencyTracker y los exporta a Prometheus.
+        // ordered:false evita el bloqueo de cabecera de línea en los paquetes de ping.
         metricsChannel = pc.createDataChannel("metrics", { ordered: false });
         metricsChannel.onopen = () => { latencyInterval = setInterval(sendLatencyPing, 5000); };
         metricsChannel.onclose = () => { if (latencyInterval) clearInterval(latencyInterval); };
@@ -70,8 +103,10 @@
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === "latency_pong") {
+                    // RTT = tiempo actual menos el timestamp que mandamos en el ping
                     const rtt = performance.now() - data.timestamp;
                     latencyDisplay.textContent = "RTT: " + rtt.toFixed(1) + " ms";
+                    // Informar al servidor del RTT medido para que lo exporte a Prometheus
                     if (metricsChannel.readyState === "open") {
                         metricsChannel.send(JSON.stringify({ type: "latency_report", latency: rtt }));
                     }
@@ -79,9 +114,16 @@
             } catch (e) { console.error("Error parsing pong:", e); }
         };
 
+        // ── Handshake SDP Offer/Answer ────────────────────────────────────────
+        // La señalización WebRTC usa SDP (Session Description Protocol):
+        //   1. El navegador genera una offer describiendo sus capacidades
+        //   2. La offer se envía al servidor por HTTP POST
+        //   3. El servidor (aiortc) la procesa, añade sus tracks y devuelve una answer
+        //   4. El navegador aplica la answer para fijar los parámetros de conexión
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
+        // IP del host hardcodeada; la alternativa con proxy inverso es POST /offer vía nginx
         const resp = await fetch("http://192.168.1.45:8081/offer", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -94,12 +136,15 @@
         console.log("WebRTC signaling completed");
     }
 
+    // Envía un ping con el timestamp actual. El servidor lo devuelve como pong
+    // para que podamos calcular el RTT al recibirlo.
     function sendLatencyPing() {
         if (metricsChannel && metricsChannel.readyState === "open") {
             metricsChannel.send(JSON.stringify({ type: "latency_ping", timestamp: performance.now() }));
         }
     }
 
+    // Iniciar WebRTC al cargar la página; mostrar alerta si algo falla
     initWebRTC().catch(e => { console.error(e); alert("WebRTC init failed: " + e); });
 </script>
 </body>

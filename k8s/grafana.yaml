@@ -1,3 +1,12 @@
+#  Dashboard Grafana (Kubernetes)
+# Grafana es la capa de visualización de las métricas de Prometheus.
+# Las credenciales de administrador se inyectan desde el Secret grafana-credentials (01-secrets.yaml).
+# El PVC persiste dashboards y configuración de datasources entre reinicios del pod.
+#
+
+#  PVC: almacenamiento persistente de Grafana
+# Guarda dashboards, usuarios, plugins y configuración de datasources en disco.
+# ReadWriteOnce es suficiente para un cluster Minikube de un solo nodo.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -10,6 +19,7 @@ spec:
     requests:
       storage: 2Gi
 ---
+#  Deployment: grafana
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,14 +37,16 @@ spec:
       labels:
         app: grafana
     spec:
+      # Grafana necesita estos IDs para ser propietario de /var/lib/grafana en el PVC
       securityContext:
-        fsGroup: 472   # GID requerido por el contenedor de Grafana
-        runAsUser: 472
+        fsGroup: 472    # GID 472 = grupo grafana en la imagen oficial
+        runAsUser: 472  # UID 472 = usuario grafana en la imagen oficial
       containers:
         - name: grafana
           image: grafana/grafana:latest
           imagePullPolicy: IfNotPresent
           env:
+            # Credenciales de administrador cargadas desde el Secret para evitar texto plano en el manifest
             - name: GF_SECURITY_ADMIN_USER
               valueFrom:
                 secretKeyRef:
@@ -46,13 +58,13 @@ spec:
                   name: grafana-credentials
                   key: admin-password
             - name: GF_LOG_LEVEL
-              value: "error"
+              value: "error"    # nivel bajo de logs; "info" muestra más detalle para depuración
           ports:
             - name: web
               containerPort: 3000
           volumeMounts:
             - name: data
-              mountPath: /var/lib/grafana
+              mountPath: /var/lib/grafana   # dashboards y config persistentes
           resources:
             requests:
               cpu: "100m"
@@ -65,6 +77,9 @@ spec:
           persistentVolumeClaim:
             claimName: grafana-pvc
 ---
+#  Service: grafana
+# NodePort hace Grafana accesible desde fuera del cluster sin necesitar 'minikube tunnel'.
+# Acceder en: http://<ip-minikube>:30300
 apiVersion: v1
 kind: Service
 metadata:
@@ -73,11 +88,11 @@ metadata:
   labels:
     app: grafana
 spec:
-  type: NodePort   # accesible sin tunnel: minikube service grafana -n streaming
+  type: NodePort
   selector:
     app: grafana
   ports:
     - name: web
       port: 3000
       targetPort: 3000
-      nodePort: 30300
+      nodePort: 30300   # NodePort fijo: http://<ip-minikube>:30300

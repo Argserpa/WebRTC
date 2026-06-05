@@ -1,3 +1,8 @@
+# ─── Namespace de Kubernetes ──────────────────────────────────────────────────
+# Todos los recursos del stack de streaming viven en el namespace "streaming".
+# Esto los aísla de kube-system y del resto de workloads del cluster.
+# Aplicar primero para que los manifests siguientes puedan referenciar namespace: streaming.
+# ──────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Namespace
 metadata:

@@ -1,4 +1,12 @@
-/* ---- LIVE DOT ---- */
+/* ─── Estilos de la página de directo (live.css) ─────────────────────────────
+   Complementa common.css para index.html (el visor WebRTC en vivo).
+   Define: punto verde animado del indicador live, contenedor del vídeo,
+   barra de controles, botón de play y badge de latencia RTT.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Punto "en directo" ───────────────────────────────────────────────────────
+   Círculo verde pulsante antes del título "Live Stream".
+   La animación indica que el stream está activo. */
 .header h1 .live-dot {
     display: inline-block;
     width: 8px;
@@ -9,18 +17,21 @@
     animation: pulse-dot 2s ease-in-out infinite;
 }
 
+/* Fade de opacidad: más sutil que escalar el elemento */
 @keyframes pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
 }
 
-/* ---- CONTENT ---- */
+/* ── Área de contenido ────────────────────────────────────────────────────────
+   Columna centrada; max-width para que el vídeo no quede demasiado ancho. */
 .content {
     max-width: 960px;
     margin: 0 auto;
     padding: 32px 24px;
 }
 
+/* Player de vídeo: ancho completo, altura máxima y fondo negro para las barras */
 .content video {
     width: 100%;
     max-height: 70vh;
@@ -30,7 +41,8 @@
     border: 1px solid var(--border);
 }
 
-/* ---- CONTROLS ---- */
+/* ── Barra de controles ───────────────────────────────────────────────────────
+   Fila horizontal debajo del vídeo con el botón de play y el badge de latencia. */
 .controls {
     display: flex;
     align-items: center;
@@ -39,6 +51,8 @@
     margin-top: 14px;
 }
 
+/* Botón "Start Playback" — desbloquea el autoplay en navegadores que lo bloquean
+   hasta que hay un gesto explícito del usuario (sobre todo con audio activo). */
 .controls button {
     font-family: 'DM Sans', sans-serif;
     font-size: 14px;
@@ -57,7 +71,9 @@
     background: var(--accent-soft);
 }
 
-/* ---- LATENCY BADGE ---- */
+/* ── Badge de latencia ────────────────────────────────────────────────────────
+   Muestra el RTT en milisegundos, actualizado cada 5 s via el DataChannel de métricas.
+   Usa JetBrains Mono para que los dígitos tengan ancho fijo y no salten. */
 .latency-badge {
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;

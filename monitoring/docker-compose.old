@@ -1,35 +1,50 @@
+# ─── Stack de monitorización antiguo (docker-compose.old) ────────────────────
+# Este era el fichero compose independiente de monitorización antes de que los
+# servicios se integraran en el docker-compose.yml principal.
+# Se conserva como referencia — NO usar directamente; se solapa con el compose
+# principal y requiere una build de nginx diferente.
+#
+# Diferencias con el stack actual:
+#   - Usa una imagen nginx-stream personalizada (con módulo RTMP)
+#   - Incluye nginx-prometheus-exporter (para el stub_status de nginx)
+#   - Grafana tiene las credenciales hardcodeadas en lugar de vars de entorno
+# ──────────────────────────────────────────────────────────────────────────────
 
 services:
-  # Nginx Streaming Server
+  # ── Servidor de streaming nginx (ANTIGUO) ─────────────────────────────────
+  # Imagen nginx con módulo RTMP para salida HLS.
+  # Sustituido por la imagen nginx:stable actual con servicio de directorio HLS simple.
   nginx-stream:
-    image: webrtc_server  # Imagen creada
-    container_name: webrtc # nombre único de la magen creada
+    image: webrtc_server          # imagen construida a mano (ya no está en el repo)
+    container_name: webrtc
     ports:
-      - "80:80"     # puerto para la página donde se aloja el streaming
-      - "443:443"   # puerto https
+      - "80:80"                   # página del visor HTTP
+      - "443:443"                 # HTTPS (requiere los certificados montados abajo)
     volumes:
-    # volúmenes para el nginx y los certificados
-    - ../nginx.conf:/usr/local/nginx/conf/nginx.conf
-    - ../certs:/usr/local/nginx/certs
+      - ../nginx.conf:/usr/local/nginx/conf/nginx.conf
+      - ../certs:/usr/local/nginx/certs
     restart: unless-stopped
     networks:
-      - streaming_network # Red para el streaming
-      - monitoring_network # Opcional: para otras configuraciones de Prometheus
+      - streaming_network
+      - monitoring_network
 
-  # Nginx Prometheus Exporter
+  # ── Exportador Prometheus de nginx (ANTIGUO) ──────────────────────────────
+  # Scrapea el endpoint /nginx_status de nginx y lo exporta a Prometheus.
+  # Ya no es necesario porque el streamer expone directamente sus propias /metrics.
   nginx-exporter:
     image: nginx/nginx-prometheus-exporter:latest
     container_name: nginx_prometheus_exporter
     ports:
       - "9113:9113"
     environment:
-      # 'nginx-stream' ha de ser el nombre del servicio en este fichero. Ambos servicios deben estar en la misma red.
+      # Tiene que estar en la misma red Docker que nginx-stream para resolverlo por nombre
       NGINX_STUB_STATUS_URL: http://nginx-stream:80/nginx_status
     restart: unless-stopped
     networks:
       - monitoring_network
-      - streaming_network # debe estar en la misma red que nginx-stream para poder comunicarse.
+      - streaming_network
 
+  # ── Prometheus ─────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus_server
@@ -43,6 +58,7 @@ services:
     networks:
       - monitoring_network
 
+  # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
     container_name: grafana_server
@@ -51,12 +67,14 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
     environment:
+      # Credenciales hardcodeadas (en el setup actual se usan vars de entorno / Secret de k8s)
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=prom_admin
     restart: unless-stopped
     networks:
       - monitoring_network
 
+  # ── Node Exporter ──────────────────────────────────────────────────────────
   node-exporter:
     image: prom/node-exporter:latest
     command:
@@ -70,7 +88,6 @@ services:
       - monitoring_network
 
 networks:
-  # Define both networks
   streaming_network:
     driver: bridge
   monitoring_network:

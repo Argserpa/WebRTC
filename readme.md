@@ -107,7 +107,7 @@ El cliente WebRTC apunta directamente al streamer; actualizar con la IP real del
 ```javascript
 // nginx/html/index.html — línea ~127
 const resp = await fetch("http://192.168.1.45:8081/offer", {
-//                                 ↑ cambiar por la IP de tu máquina
+//                                 ↑ IP del host que sirve el streamer
 ```
 
 > Obtener la IP del host: `ip route get 1 | awk '{print $7; exit}'`

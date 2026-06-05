@@ -1,3 +1,16 @@
+#  Node Exporter (Kubernetes)
+# Exporta métricas de hardware y SO de Linux para que Prometheus pueda monitorizar el host.
+# Usa un DaemonSet (un pod por nodo) — apropiado para el nodo único de Minikube.
+#
+# Decisiones de diseño:
+#   - hostPID: true → permite al exportador ver el árbol de procesos del host (métricas de procesos)
+#   - mount /host   → permite leer /proc y /sys del host en lugar de los del contenedor
+#   - Service headless → Prometheus puede descubrir las IPs de los pods via DNS para el scraping
+#
+
+#  DaemonSet: node-exporter
+# DaemonSet garantiza que corra un pod en cada nodo.
+# En Minikube (nodo único) es equivalente a un Deployment con una réplica.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -14,29 +27,30 @@ spec:
       labels:
         app: node-exporter
     spec:
+      # Permitir scheduling en nodos con taints (p. ej. taints de control-plane en clusters multi-nodo)
       tolerations:
         - effect: NoSchedule
           operator: Exists
-      hostPID: true   # necesario para métricas de procesos del host
+      hostPID: true   # necesario: node-exporter necesita el namespace PID del host para las métricas de procesos
       containers:
         - name: node-exporter
           image: prom/node-exporter:latest
           imagePullPolicy: IfNotPresent
           args:
-            - "--path.rootfs=/host"
+            - "--path.rootfs=/host"   # leer /proc y /sys desde el mount del host, no del contenedor
           ports:
             - name: metrics
               containerPort: 9100
-              hostPort: 9100
+              hostPort: 9100          # bind al puerto del host para que Prometheus llegue por <ip-nodo>:9100
           securityContext:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
-            runAsUser: 65534
+            runAsUser: 65534          # UID 65534 = "nobody" — privilegios mínimos
           volumeMounts:
             - name: rootfs
               mountPath: /host
               readOnly: true
-              mountPropagation: HostToContainer
+              mountPropagation: HostToContainer   # ver actualizaciones de los mounts del host después de arrancar el pod
           resources:
             requests:
               cpu: "50m"
@@ -47,8 +61,12 @@ spec:
       volumes:
         - name: rootfs
           hostPath:
-            path: /
+            path: /   # montar el sistema de ficheros raíz del host — node-exporter lee /proc y /sys desde aquí
 ---
+#  Service: node-exporter
+# Service headless (clusterIP: None): el DNS resuelve a las IPs individuales de los pods
+# en lugar de a una IP virtual única. Así Prometheus puede scrapear cada pod del nodo
+# de forma independiente usando el nombre del servicio.
 apiVersion: v1
 kind: Service
 metadata:
@@ -58,7 +76,7 @@ metadata:
     app: node-exporter
 spec:
   type: ClusterIP
-  clusterIP: None   # headless — resuelve a IPs de cada pod del DaemonSet
+  clusterIP: None   # headless: resuelve a las IPs de los pods del DaemonSet, no a una VIP con balanceo
   selector:
     app: node-exporter
   ports:

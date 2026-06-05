@@ -1,21 +1,31 @@
-/* ---- HEADER ACCENT ---- */
+/* ─── Estilos de la página de grabaciones (recordings.css) ──────────────────
+   Complementa common.css para recordings.html.
+   Define: layout en dos columnas (sidebar + main), lista de fechas, rejilla de
+   tarjetas, player inline y breakpoints responsive.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Acento del header ────────────────────────────────────────────────────────
+   El círculo relleno antes de "Recordings" usa el color de acento. */
 .header h1 span {
     color: var(--accent);
 }
 
-/* ---- LAYOUT ---- */
+/* ── Layout en dos columnas ───────────────────────────────────────────────────
+   Sidebar fijo de 260px + main que ocupa el resto.
+   Alto mínimo = toda la ventana menos el header (~61px). */
 .layout {
     display: grid;
     grid-template-columns: 260px 1fr;
     min-height: calc(100vh - 61px);
 }
 
-/* ---- SIDEBAR ---- */
+/* ── Sidebar ──────────────────────────────────────────────────────────────────
+   Panel izquierdo con la lista de fechas disponibles, cargada desde /api/recordings. */
 .sidebar {
     border-right: 1px solid var(--border);
     background: var(--surface);
     padding: 20px 0;
-    overflow-y: auto;
+    overflow-y: auto;   /* scroll si hay muchas fechas */
 }
 
 .sidebar-title {
@@ -34,7 +44,9 @@
     font-size: 14px;
 }
 
-/* ---- DATE ITEMS ---- */
+/* ── Elementos de fecha ───────────────────────────────────────────────────────
+   Cada fila muestra la fecha y un badge con el número de grabaciones.
+   Un borde izquierdo de acento indica la fecha seleccionada actualmente. */
 .date-item {
     display: flex;
     align-items: center;
@@ -42,13 +54,14 @@
     padding: 10px 20px;
     cursor: pointer;
     transition: all 0.15s;
-    border-left: 3px solid transparent;
+    border-left: 3px solid transparent;   /* invisible por defecto; se colorea al activar */
 }
 
 .date-item:hover {
     background: var(--surface-2);
 }
 
+/* Fecha activa: borde de acento + fondo suave */
 .date-item.active {
     background: var(--accent-soft);
     border-left-color: var(--accent);
@@ -57,7 +70,7 @@
 .date-item .date-label {
     font-size: 14px;
     font-weight: 500;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'JetBrains Mono', monospace;   /* monoespaciado para alinear las fechas */
 }
 
 .date-item .date-count {
@@ -68,12 +81,14 @@
     border-radius: 10px;
 }
 
+/* Badge de fecha activa: relleno con el color de acento */
 .date-item.active .date-count {
     background: var(--accent);
     color: white;
 }
 
-/* ---- MAIN CONTENT ---- */
+/* ── Área principal ───────────────────────────────────────────────────────────
+   Panel derecho con el player inline, el título/subtítulo y la rejilla de tarjetas. */
 .main {
     padding: 28px 32px;
     overflow-y: auto;
@@ -92,9 +107,12 @@
     margin-bottom: 24px;
 }
 
-/* ---- VIDEO PLAYER ---- */
+/* ── Player inline ────────────────────────────────────────────────────────────
+   Oculto por defecto; se muestra (clase "visible") al hacer clic en una tarjeta.
+   Se destruye y oculta de nuevo al pulsar "Close".
+   Usa hls.js para reproducir el playlist .m3u8 VOD del segmento seleccionado. */
 .player-container {
-    display: none;
+    display: none;   /* oculto hasta que se añade .visible */
     margin-bottom: 28px;
     background: #000;
     border-radius: 12px;
@@ -112,6 +130,7 @@
     display: block;
 }
 
+/* Barra de info debajo del vídeo: etiqueta "en reproducción" + botones */
 .player-info {
     display: flex;
     align-items: center;
@@ -121,6 +140,7 @@
     border-top: 1px solid var(--border);
 }
 
+/* Muestra "YYYY-MM-DD  HH:MM:SS" de la grabación en reproducción */
 .player-info .now-playing {
     font-size: 13px;
     font-family: 'JetBrains Mono', monospace;
@@ -132,6 +152,7 @@
     gap: 8px;
 }
 
+/* Estilo base compartido por los botones Download y Close */
 .player-btn {
     font-size: 13px;
     color: var(--text-dim);
@@ -149,12 +170,15 @@
     border-color: var(--accent);
 }
 
+/* El botón Close se pone rojo en hover para señalar que es una acción destructiva */
 .player-btn.close:hover {
     color: var(--danger);
     border-color: var(--danger);
 }
 
-/* ---- RECORDINGS GRID ---- */
+/* ── Rejilla de tarjetas ──────────────────────────────────────────────────────
+   Relleno automático: las tarjetas tienen un mínimo de 280px y crecen para ocupar
+   el espacio disponible. Cada tarjeta muestra la hora de inicio y el tamaño en MB. */
 .recordings-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -176,14 +200,16 @@
 .recording-card:hover {
     border-color: var(--accent);
     background: var(--accent-soft);
-    transform: translateY(-1px);
+    transform: translateY(-1px);   /* pequeño levantamiento en hover */
 }
 
+/* Tarjeta en reproducción: tinte verde para diferenciarse visualmente */
 .recording-card.playing {
     border-color: var(--green);
     background: rgba(52, 211, 153, 0.08);
 }
 
+/* Icono de play en un cuadrado a la izquierda de cada tarjeta */
 .card-icon {
     width: 44px;
     height: 44px;
@@ -200,11 +226,13 @@
     background: rgba(52, 211, 153, 0.15);
 }
 
+/* Bloque de texto a la derecha del icono */
 .card-details {
     flex: 1;
-    min-width: 0;
+    min-width: 0;   /* evita que el texto desborde y rompa el layout flex */
 }
 
+/* Hora de inicio de la grabación en formato HH:MM:SS */
 .card-time {
     font-size: 16px;
     font-weight: 600;
@@ -217,15 +245,17 @@
     margin-top: 2px;
 }
 
-/* ---- RESPONSIVE ---- */
+/* ── Responsive ───────────────────────────────────────────────────────────────
+   En móvil: el layout de dos columnas colapsa a una sola columna;
+   el sidebar pasa a una franja de altura fija desplazable encima del main. */
 @media (max-width: 768px) {
     .layout {
-        grid-template-columns: 1fr;
+        grid-template-columns: 1fr;   /* apilado vertical en pantallas estrechas */
     }
     .sidebar {
         border-right: none;
         border-bottom: 1px solid var(--border);
-        max-height: 200px;
+        max-height: 200px;   /* mostrar unas pocas fechas sin scroll excesivo */
     }
     .main {
         padding: 20px 16px;

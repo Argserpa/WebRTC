@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+# ─── Servidor de Streaming WebRTC ─────────────────────────────────────────────
+# Responsabilidades:
+#   1. Runner de FFmpeg   → captura V4L2+ALSA, codifica H.264/AAC, muxea hacia:
+#                            a) UDP:10000 (pipe en vivo para el MediaPlayer de aiortc)
+#                            b) Ficheros .ts segmentados en /recordings/YYYY-MM-DD/
+#   2. Señalización WebRTC → POST /offer → RTCPeerConnection con aiortc
+#   3. API de grabaciones  → GET /api/recordings[/{fecha}[/{fichero}/playlist.m3u8]]
+#   4. Prometheus          → GET /metrics (bitrate/FPS de FFmpeg, peers, RTT, uptime)
+#
+# Flujo de medios:
+#   V4L2 + ALSA → FFmpeg (libx264 ultrafast / aac) → tee muxer
+#     rama A: udp://127.0.0.1:10000 → MediaPlayer → MediaRelay
+#                                           ↓ subscribe() por peer
+#                                     RTCPeerConnection → navegador
+#     rama B: /recordings/YYYY-MM-DD/HH-MM-SS.ts  (nuevo fichero cada SEGMENT_DURATION s)
+# ──────────────────────────────────────────────────────────────────────────────
 import os
 import asyncio
 import shlex
@@ -26,26 +42,31 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-# =================== ENV ====================
+# ── Configuración desde variables de entorno ───────────────────────────────────
+# Todos los parámetros de ejecución vienen de variables de entorno (definidas en
+# docker-compose.yml o en el ConfigMap de k8s). Los valores por defecto permiten
+# arrancar localmente sin docker-compose.
 USE_NVENC = os.getenv("USE_NVENC", "false").lower() in ("1", "true", "yes")
 HLS_DIR = os.getenv("HLS_DIR", "/hls")
 RECORD_DIR = os.getenv("RECORD_DIR", "/recordings")
-UDP_PORT = int(os.getenv("UDP_PORT", "10001"))
-SEGMENT_DURATION = int(os.getenv("SEGMENT_DURATION", "1800"))
-FFMPEG_LOOP_RESTART_DELAY = 2
+UDP_PORT = int(os.getenv("UDP_PORT", "10001"))          # puerto del pipe interno FFmpeg → aiortc
+SEGMENT_DURATION = int(os.getenv("SEGMENT_DURATION", "1800"))  # segundos por fichero de grabación
+FFMPEG_LOOP_RESTART_DELAY = 2                           # segundos de espera antes de reiniciar FFmpeg
 
 os.makedirs(HLS_DIR, exist_ok=True)
 os.makedirs(RECORD_DIR, exist_ok=True)
 
-# ========= SYSTEM DEPENDENTS  =================
+# ── Configuración de hardware / dispositivos ───────────────────────────────────
 VIDEO_DEVICE = os.getenv("VIDEO_DEVICE", "/dev/video0")
-AUDIO_DEVICE = os.getenv("AUDIO_DEVICE", "plughw:1,0")
+AUDIO_DEVICE = os.getenv("AUDIO_DEVICE", "plughw:1,0")   # dispositivo ALSA: tarjeta 1, subdispositivo 0
 SCALE = os.getenv("VIDEO_SCALE", "1280x720")
 
 
-# ================== FFMPEG ==================
+# ── Pipeline FFmpeg ────────────────────────────────────────────────────────────
+
 def get_today_recording_dir():
-    today_str = date.today().isoformat()
+    """Devuelve (y crea si no existe) el directorio de grabación del día actual."""
+    today_str = date.today().isoformat()   # "YYYY-MM-DD"
     today_dir = os.path.join(RECORD_DIR, today_str)
     os.makedirs(today_dir, exist_ok=True)
     return today_dir
@@ -53,30 +74,35 @@ def get_today_recording_dir():
 
 def build_ffmpeg_cmd():
     """
-    Builds FFmpeg command as a list.
-    Uses tee muxer with TWO mpegts outputs:
-      - Output 1: UDP for live streaming
-      - Output 2: segmented .ts files for recordings
+    Construye el comando FFmpeg como una lista.
+    Usa el tee muxer con DOS salidas mpegts:
+      - Salida 1: UDP para el streaming en vivo
+      - Salida 2: ficheros .ts segmentados para las grabaciones
 
-    Both outputs are mpegts, so no format mismatch issues.
-    .ts files are always valid — no moov atom, no finalization needed.
+    Las dos salidas son mpegts, así que no hay incompatibilidad de formato.
+    Los .ts siempre son válidos — sin moov atom, sin necesidad de finalización.
     """
+    # Entrada V4L2 si es un dispositivo real; si no, tratar VIDEO_DEVICE como fichero/URL
     if VIDEO_DEVICE.startswith("/dev/"):
         video_input = ["-f", "v4l2", "-video_size", "1280x720", "-framerate", "10", "-i", VIDEO_DEVICE]
     else:
-        video_input = ["-re", "-i", VIDEO_DEVICE]
+        video_input = ["-re", "-i", VIDEO_DEVICE]  # -re: leer a velocidad nativa (para ficheros)
 
+    # Entrada de audio ALSA: un solo canal para reducir el ancho de banda
     audio_input = ["-f", "alsa", "-ac", "1", "-i", AUDIO_DEVICE]
     rec_dir = get_today_recording_dir()
 
+    # Tee muxer: envía el mismo stream codificado a varias salidas a la vez.
+    # rama A [f=mpegts]: MPEG-TS en bruto por UDP — el MediaPlayer de aiortc lo lee desde aquí
+    # rama B [f=segment]: divide en ficheros .ts temporizados; strftime=1 los nombra por la hora del reloj
     tee_output = (
         f"[f=mpegts]udp://127.0.0.1:{UDP_PORT}"
         f"|"
         f"[f=segment"
         f":segment_time={SEGMENT_DURATION}"
         f":segment_format=mpegts"
-        f":strftime=1"
-        f":reset_timestamps=1"
+        f":strftime=1"          # nombra los ficheros como HH-MM-SS.ts según el reloj
+        f":reset_timestamps=1"  # cada segmento empieza en timestamp 0 (necesario para reproducción independiente)
         f"]{rec_dir}/%H-%M-%S.ts"
     )
 
@@ -84,11 +110,11 @@ def build_ffmpeg_cmd():
         "ffmpeg", "-hide_banner", "-y", "-stats", "-loglevel", "warning",
         *video_input,
         *audio_input,
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-pix_fmt", "yuv420p",
-        "-g", "50",
-        "-c:a", "aac", "-ar", "48000", "-ac", "1",
+        "-map", "0:v:0", "-map", "1:a:0",             # mapeo explícito: stream de vídeo 0, audio 0
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",  # H.264 de baja latencia
+        "-pix_fmt", "yuv420p",                         # formato de pixel con amplia compatibilidad de decodificadores
+        "-g", "50",                                    # tamaño de GOP = 50 fotogramas; determina el intervalo de keyframes
+        "-c:a", "aac", "-ar", "48000", "-ac", "1",    # audio AAC a 48kHz, mono
         "-f", "tee",
         tee_output,
     ]
@@ -98,7 +124,11 @@ def build_ffmpeg_cmd():
 
 
 async def ffmpeg_runner():
-    """Runs FFmpeg in a loop. Restarts at midnight and changes recording directory."""
+    """
+    Bucle persistente que mantiene FFmpeg corriendo.
+    Se reinicia a medianoche para que las grabaciones caigan en el directorio del día nuevo.
+    También se reinicia si FFmpeg cae, para recuperarse de errores del dispositivo.
+    """
     while True:
         cmd = build_ffmpeg_cmd()
         start_date = date.today()
@@ -108,35 +138,39 @@ async def ffmpeg_runner():
             if cmd[0] != "ffmpeg":
                 raise ValueError(f"Invalid FFmpeg command: {cmd}")
 
-            ffmpeg_running.set(1)
+            ffmpeg_running.set(1)   # gauge Prometheus: FFmpeg está corriendo
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,   # capturar stderr para que FFmpegMetrics parsee las stats
                 env=os.environ.copy()
             )
             logging.info("FFmpeg PID %s", process.pid)
 
+            # Tarea en background que lee el stderr de FFmpeg y exporta métricas a Prometheus
             stream_id = "main"
             monitor_task = asyncio.create_task(
                 monitor_ffmpeg_stream(process, stream_id)
             )
 
+            # Bucle de vigilancia: comprueba cada segundo si FFmpeg salió o si cambió el día
             while True:
                 if process.returncode is not None:
                     break
                 if date.today() != start_date:
+                    # Medianoche: matar FFmpeg para que la próxima iteración use el directorio del día nuevo
                     logging.info("Date changed, restarting FFmpeg for new recording directory")
                     process.terminate()
                     try:
                         await asyncio.wait_for(process.wait(), timeout=5)
                     except asyncio.TimeoutError:
-                        process.kill()
+                        process.kill()   # forzar si el terminate no termina en 5 s
                         await process.wait()
                     break
                 await asyncio.sleep(1)
 
+            # Cancelar la tarea de métricas limpiamente
             if not monitor_task.done():
                 monitor_task.cancel()
                 try:
@@ -144,21 +178,26 @@ async def ffmpeg_runner():
                 except asyncio.CancelledError:
                     pass
 
-            ffmpeg_running.set(0)
+            ffmpeg_running.set(0)   # gauge Prometheus: FFmpeg ha parado
             logging.info("FFmpeg process exited with code %s", process.returncode)
 
         except Exception:
             ffmpeg_running.set(0)
             logging.exception("Error running FFmpeg")
 
+        # Pausa breve antes de reiniciar para evitar bucles de crash rápidos
         await asyncio.sleep(FFMPEG_LOOP_RESTART_DELAY)
 
 
-# ================== WEBRTC ==================
+# ── Señalización WebRTC ────────────────────────────────────────────────────────
+# pcs: conjunto de RTCPeerConnection activas (una por pestaña del navegador conectada)
+# player: MediaPlayer único que lee desde la salida UDP de FFmpeg
+# relay: MediaRelay multiplexa la salida del player hacia N conexiones peer
 pcs = set()
 player = None
 relay = None
 
+# Configuración ICE — tiene que coincidir con la config iceServers de index.html
 config = RTCConfiguration(
     iceServers=[
         RTCIceServer(urls=["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"]),
@@ -168,6 +207,18 @@ config = RTCConfiguration(
 
 
 async def offer(request):
+    """
+    POST /offer — endpoint de señalización WebRTC offer/answer.
+
+    Flujo:
+      1. Parsear la SDP offer del navegador (body JSON: {sdp, type})
+      2. Crear una RTCPeerConnection con la config ICE global
+      3. Registrar handlers para cambios de estado y el DataChannel de métricas
+      4. Establecer la descripción remota (offer del navegador)
+      5. Añadir los tracks de vídeo y audio desde el MediaRelay
+      6. Crear y establecer la descripción local (answer del servidor)
+      7. Devolver la SDP answer como JSON
+    """
     global player, relay
 
     try:
@@ -189,6 +240,7 @@ async def offer(request):
 
     @pc.on("connectionstatechange")
     async def on_state_change():
+        """Limpia la conexión cuando falla, se cierra o se desconecta."""
         logging.info("Connection state: %s", pc.connectionState)
         if pc.connectionState in ("failed", "closed", "disconnected"):
             if webrtc_peers._value.get() > 0:
@@ -200,6 +252,12 @@ async def offer(request):
 
     @pc.on("datachannel")
     def on_datachannel(channel):
+        """
+        Gestiona el DataChannel 'metrics' que abre el navegador.
+        Mensajes del protocolo:
+          latency_ping   → devolver como latency_pong (medición de RTT)
+          latency_report → registrar el RTT en LatencyTracker para Prometheus
+        """
         logging.info("DataChannel '%s' received from client", channel.label)
 
         @channel.on("message")
@@ -207,16 +265,18 @@ async def offer(request):
             try:
                 data = json.loads(message)
                 if data.get("type") == "latency_ping":
+                    # Devolver el timestamp del navegador para que pueda calcular el RTT al recibirlo
                     channel.send(json.dumps({"type": "latency_pong", "timestamp": data["timestamp"]}))
                 elif data.get("type") == "latency_report":
                     rtt_ms = float(data.get("latency", 0))
-                    latency_tracker.record(rtt_ms)
+                    latency_tracker.record(rtt_ms)   # actualiza los gauges e histograma de Prometheus
             except Exception as e:
                 logging.error("Error handling DataChannel message: %s", e)
                 webrtc_errors.inc()
 
     try:
         await pc.setRemoteDescription(offer_desc)
+        # Añadir los tracks del relay: cada suscriptor recibe una copia independiente del stream
         if player.video:
             pc.addTrack(relay.subscribe(player.video))
         if player.audio:
@@ -235,14 +295,21 @@ async def offer(request):
 
 
 async def on_shutdown(app):
+    """Cierra todas las conexiones peer limpiamente al apagar el servidor."""
     await asyncio.gather(*[pc.close() for pc in pcs])
     pcs.clear()
     logging.info("All peer connections closed")
 
 
-# ================== RECORDINGS API ==================
+# ── API REST de grabaciones ────────────────────────────────────────────────────
+
 async def api_recording_dates(request):
-    """GET /api/recordings → lista de fechas con grabaciones"""
+    """
+    GET /api/recordings
+    Devuelve todas las fechas que tienen al menos un fichero .ts de grabación,
+    ordenadas de más reciente a más antigua.
+    Respuesta: { dates: [{date, count}] }
+    """
     dates = []
     try:
         for entry in sorted(os.listdir(RECORD_DIR), reverse=True):
@@ -257,7 +324,13 @@ async def api_recording_dates(request):
 
 
 async def api_recordings_for_date(request):
-    """GET /api/recordings/{date} → lista de ficheros para esa fecha"""
+    """
+    GET /api/recordings/{fecha}
+    Devuelve todos los ficheros .ts de la fecha solicitada con sus metadatos.
+    Respuesta: { files: [{name, display_time, size_mb, url, download_url}] }
+      url          → playlist HLS VOD para reproducción con hls.js
+      download_url → URL directa al .ts para descarga en el navegador
+    """
     date_str = request.match_info['date']
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
         return web.json_response({"error": "Invalid date format"}, status=400)
@@ -272,15 +345,16 @@ async def api_recordings_for_date(request):
             full = os.path.join(dir_path, f)
             try:
                 stat = os.stat(full)
+                # Los ficheros se llaman HH-MM-SS.ts — convertir a HH:MM:SS para mostrar
                 time_match = re.match(r'^(\d{2})-(\d{2})-(\d{2})\.ts$', f)
                 display_time = f"{time_match.group(1)}:{time_match.group(2)}:{time_match.group(3)}" if time_match else f
                 files.append({
                     "name": f,
                     "display_time": display_time,
                     "size_mb": round(stat.st_size / (1024 * 1024), 1),
-                    # URL to the .m3u8 wrapper (for hls.js playback)
+                    # URL al wrapper .m3u8 (para reproducción con hls.js)
                     "url": f"/api/recordings/{date_str}/{f}/playlist.m3u8",
-                    # Direct .ts URL (for download)
+                    # URL directa al .ts (para descarga)
                     "download_url": f"/recordings/{date_str}/{f}",
                 })
             except OSError:
@@ -290,9 +364,14 @@ async def api_recordings_for_date(request):
 
 async def api_recording_playlist(request):
     """
-    GET /api/recordings/{date}/{file}/playlist.m3u8
-    Generates a minimal HLS VOD playlist pointing to the .ts file.
-    This lets hls.js play the .ts in the browser.
+    GET /api/recordings/{fecha}/{fichero}/playlist.m3u8
+    Genera un playlist HLS VOD mínimo que envuelve un único fichero .ts.
+    Esto permite que hls.js reproduzca la grabación en el navegador sin necesitar
+    un segmentador HLS real — el .ts completo se trata como un único segmento.
+
+    La duración se estima a partir del tamaño del fichero porque leer la duración
+    real requiere demuxear el fichero (costoso). hls.js gestiona bien el fin del
+    stream aunque la duración declarada no sea exacta.
     """
     date_str = request.match_info['date']
     filename = request.match_info['file']
@@ -306,19 +385,20 @@ async def api_recording_playlist(request):
     if not os.path.isfile(file_path):
         return web.Response(text="Not found", status=404)
 
-    # Get approximate duration from file size and bitrate estimate
-    # Better: use a large duration, hls.js will handle the actual end
+    # Estimar la duración a partir del tamaño del fichero (más rápido que demuxear).
+    # A ~500 kbps de bitrate total: duración ≈ tamaño_bytes / 62500
+    # Mínimo SEGMENT_DURATION para que los ficheros cortos/incompletos tengan un playlist válido.
     file_size = os.path.getsize(file_path)
-    # Estimate: ~500kbps total → duration ≈ size / 62500
     estimated_duration = max(int(file_size / 62500), SEGMENT_DURATION)
 
     ts_url = f"/recordings/{date_str}/{filename}"
 
+    # Playlist HLS VOD mínimo: un segmento, con marcador ENDLIST explícito
     playlist = (
         "#EXTM3U\n"
         "#EXT-X-VERSION:3\n"
         f"#EXT-X-TARGETDURATION:{estimated_duration}\n"
-        "#EXT-X-PLAYLIST-TYPE:VOD\n"
+        "#EXT-X-PLAYLIST-TYPE:VOD\n"   # VOD: el playlist es completo y nunca cambia
         "#EXT-X-MEDIA-SEQUENCE:0\n"
         f"#EXTINF:{estimated_duration},\n"
         f"{ts_url}\n"
@@ -332,8 +412,10 @@ async def api_recording_playlist(request):
     )
 
 
-# ================== HTTP APP ==================
+# ── Configuración de la aplicación HTTP ───────────────────────────────────────
+
 async def init_app():
+    """Registra todas las rutas y configura CORS para las peticiones cross-origin del navegador."""
     app = web.Application()
     app.router.add_post("/offer", offer)
     app.router.add_get("/metrics", metrics)
@@ -341,6 +423,8 @@ async def init_app():
     app.router.add_get("/api/recordings/{date}", api_recordings_for_date)
     app.router.add_get("/api/recordings/{date}/{file}/playlist.m3u8", api_recording_playlist)
 
+    # CORS en todas las rutas para que el navegador pueda llamar a /offer y /api/*
+    # desde http://192.168.x.x:8080 (nginx) mientras la API está en :8081 (aiortc)
     cors = aiohttp_cors.setup(app, defaults={
         "*": aiohttp_cors.ResourceOptions(allow_credentials=True, expose_headers="*", allow_headers="*")
     })
@@ -351,8 +435,19 @@ async def init_app():
     return app
 
 
-# ================== MEDIA PLAYER ==================
+# ── Factory del MediaPlayer ────────────────────────────────────────────────────
+
 async def create_player_with_retry(udp_port, max_retries=10, delay=1.0):
+    """
+    Abre un MediaPlayer de aiortc leyendo desde el pipe UDP de FFmpeg.
+    Reintenta porque FFmpeg puede tardar un momento en empezar a escribir en el UDP
+    después de arrancar (condición de carrera entre el subproceso y el primer paquete).
+
+    Opciones del UDP ajustadas para baja latencia en streaming en vivo:
+      fflags=nobuffer+discardcorrupt → sin buffer, descartar fotogramas corruptos
+      analyzeduration=0, probesize pequeño → detectar el formato lo antes posible
+      max_delay=0, sync=ext → desactivar el buffer de sincronización AV del lector
+    """
     udp_url = (
         f"udp://127.0.0.1:{udp_port}"
         f"?fifo_size=2000&overrun_nonfatal=1&buffer_size=32768&reuse=1&timeout=1000000"
@@ -376,23 +471,27 @@ async def create_player_with_retry(udp_port, max_retries=10, delay=1.0):
     raise RuntimeError(f"Could not open MediaPlayer after {max_retries} retries")
 
 
-# ================== MAIN ==================
+# ── Punto de entrada ───────────────────────────────────────────────────────────
+
 async def main():
     global player, relay
+    # Lanzar FFmpeg como tarea en background — corre en el mismo event loop
     asyncio.create_task(ffmpeg_runner())
+    # Esperar a que FFmpeg empiece a escribir en el UDP antes de abrir el MediaPlayer
     player = await create_player_with_retry(UDP_PORT)
+    # MediaRelay distribuye el stream del MediaPlayer único a todos los peers conectados
     relay = MediaRelay()
 
     app = await init_app()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8081)
+    site = web.TCPSite(runner, "0.0.0.0", 8081)   # escuchar en todas las interfaces
     await site.start()
 
     logging.info("WebRTC signaling server running on http://0.0.0.0:8081")
     logging.info("Recordings directory: %s", RECORD_DIR)
     logging.info("Segment duration: %d seconds", SEGMENT_DURATION)
-    await asyncio.Event().wait()
+    await asyncio.Event().wait()   # correr indefinidamente hasta que se interrumpa
 
 
 if __name__ == "__main__":

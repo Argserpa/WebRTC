@@ -1,7 +1,13 @@
-numpy
-aiohttp
-opencv-python-headless
-aiohttp==3.8.5
-aiohttp_cors==0.7.0
-prometheus-client
-psutil
+# ── Dependencias Python de la aplicación ──────────────────────────────────────
+# Nota: aiohttp, aiortc, numpy y opencv-python-headless se instalan directamente
+# en el Dockerfile antes de procesar este fichero (para aprovechar la caché de capas).
+# Aquí van los paquetes que cambian con menos frecuencia.
+# ──────────────────────────────────────────────────────────────────────────────
+
+numpy                    # operaciones con arrays que usa aiortc en el procesado multimedia
+aiohttp                  # servidor HTTP asíncrono para /offer, /metrics y las rutas /api/
+opencv-python-headless   # procesado de imagen (headless = sin dependencias de GUI)
+aiohttp==3.8.5           # versión fijada para estabilidad con aiortc
+aiohttp_cors==0.7.0      # middleware CORS para que el navegador pueda llamar a /offer desde otro puerto
+prometheus-client        # librería de métricas Prometheus: Counter, Gauge, Histogram, generate_latest
+psutil                   # métricas de sistema y procesos (disponible para uso futuro)

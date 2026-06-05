@@ -1,14 +1,25 @@
+#  Manifest de Kustomize
+# Kustomize agrupa todos los recursos del namespace streaming en una unidad desplegable.
+#
+# Aplicar todo de una vez:
+#   kubectl apply -k k8s/
+#
+# El orden importa para los recursos con dependencias:
+#   00-namespace → tiene que existir antes que cualquier recurso con namespace
+#   01-secrets   → tiene que existir antes de que Grafana lea las credenciales
+#   el resto     → el orden dentro de esta lista no afecta a kubectl apply
+#
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: streaming
+namespace: streaming   # se aplica a todos los recursos que no especifiquen namespace explícitamente
 
 resources:
-  - 00-namespace.yaml
-  - 01-secrets.yaml
-  - streamer.yaml
-  - web.yaml
-  - coturn.yaml
-  - prometheus.yaml
-  - grafana.yaml
-  - node-exporter.yaml
+  - 00-namespace.yaml       # declaración del namespace (tiene que ir primero)
+  - 01-secrets.yaml         # Secret con las credenciales de Grafana
+  - streamer.yaml           # PVCs, ConfigMap, Deployment y Service del video-streamer
+  - web.yaml                # Deployment y Service del hls-web (nginx)
+  - coturn.yaml             # ConfigMap, Deployment y Service del servidor TURN coturn
+  - prometheus.yaml         # ConfigMap, PVC, Deployment y Service de Prometheus
+  - grafana.yaml            # PVC, Deployment y Service de Grafana
+  - node-exporter.yaml      # DaemonSet y Service headless del node-exporter

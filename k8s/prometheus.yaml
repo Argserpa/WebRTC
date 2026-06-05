@@ -1,3 +1,14 @@
+#  Prometheus (Kubernetes)
+# Base de datos de series temporales que recoge métricas de:
+#   video-streamer:8081/metrics  → métricas TFG_* propias (FFmpeg, WebRTC, latencia)
+#   node-exporter:9100           → métricas del SO del host
+#   localhost:9090               → automonitorización de Prometheus
+#
+# La configuración se guarda en un ConfigMap para poder actualizarla sin reconstruir
+# ninguna imagen. --web.enable-lifecycle permite recargar la config en caliente via POST /-/reload.
+#
+
+#  ConfigMap: configuración de scraping de Prometheus
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -6,28 +17,31 @@ metadata:
 data:
   prometheus.yml: |
     global:
-      scrape_interval: 15s
-      evaluation_interval: 15s
+      scrape_interval: 15s       # recoger métricas de todos los targets cada 15 segundos
+      evaluation_interval: 15s   # evaluar reglas de alertas (ninguna definida aún) cada 15 segundos
 
     scrape_configs:
-      # Métricas del streamer WebRTC (FFmpeg, peers, latencia, etc.)
+      # Métricas TFG_* del streamer WebRTC Python
       - job_name: 'webrtc-streamer'
         metrics_path: /metrics
         static_configs:
-          - targets: ['video-streamer:8081']
+          - targets: ['video-streamer:8081']   # nombre DNS del Service de Kubernetes
             labels:
               instance: webrtc_streamer
 
-      # Prometheus se monitoriza a sí mismo
+      # Automonitorización de Prometheus (duración del scraping, tamaño de colas, etc.)
       - job_name: 'prometheus'
         static_configs:
           - targets: ['localhost:9090']
 
-      # Métricas del SO del nodo
+      # Métricas del SO del host desde el DaemonSet de node-exporter
       - job_name: 'node_exporter'
         static_configs:
-          - targets: ['node-exporter:9100']
+          - targets: ['node-exporter:9100']   # nombre DNS del Service de Kubernetes
 ---
+#  PVC: almacenamiento de series temporales de Prometheus
+# Persiste la TSDB (time-series database) entre reinicios del pod.
+# 5 Gi son suficientes para unos 30 días de datos a la cadencia de scraping habitual.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -35,11 +49,12 @@ metadata:
   namespace: streaming
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteOnce   # un único escritor — solo un pod de Prometheus a la vez
   resources:
     requests:
       storage: 5Gi
 ---
+#  Deployment: prometheus
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,7 +63,7 @@ metadata:
   labels:
     app: prometheus
 spec:
-  replicas: 1
+  replicas: 1   # una sola instancia — la TSDB no es segura con múltiples escritores
   selector:
     matchLabels:
       app: prometheus
@@ -58,24 +73,24 @@ spec:
         app: prometheus
     spec:
       securityContext:
-        fsGroup: 65534   # grupo 'nobody' del contenedor de Prometheus
+        fsGroup: 65534   # GID "nobody" — necesario para que Prometheus pueda escribir en el PVC
       containers:
         - name: prometheus
           image: prom/prometheus:latest
           imagePullPolicy: IfNotPresent
           args:
             - "--config.file=/etc/prometheus/prometheus.yml"
-            - "--storage.tsdb.path=/prometheus"
-            - "--web.enable-lifecycle"
+            - "--storage.tsdb.path=/prometheus"   # persistir la TSDB en el mount del PVC
+            - "--web.enable-lifecycle"             # recarga de config en caliente via POST /-/reload
           ports:
             - name: web
               containerPort: 9090
           volumeMounts:
             - name: config
               mountPath: /etc/prometheus/prometheus.yml
-              subPath: prometheus.yml
+              subPath: prometheus.yml   # montar solo esta clave del ConfigMap
             - name: data
-              mountPath: /prometheus
+              mountPath: /prometheus    # PVC para los datos de la TSDB
           resources:
             requests:
               cpu: "200m"
@@ -91,6 +106,9 @@ spec:
           persistentVolumeClaim:
             claimName: prometheus-pvc
 ---
+#  Service: prometheus
+# ClusterIP (solo interno): Grafana llega a Prometheus usando este nombre de servicio.
+# El acceso externo requiere un NodePort o `kubectl port-forward svc/prometheus 9090:9090`.
 apiVersion: v1
 kind: Service
 metadata:
