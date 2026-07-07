@@ -28,6 +28,10 @@
     </div>
 </div>
 
+<!-- Instrumentación QoE de cliente (startup delay + stalls/min). Es el
+     mismo qoe-meter.js que el Proyecto 1, para que las métricas sean comparables.
+     En WebRTC mide los stalls como freezeCount de getStats (fallback: eventos waiting). -->
+<script src="/js/qoe-meter.js"></script>
 <script>
     let pc;                  // RTCPeerConnection — una por carga de página
     let metricsChannel;      // DataChannel para el ping/pong de latencia
@@ -41,7 +45,7 @@
         try { await videoEl.play(); } catch (e) { console.warn("User gesture required:", e); }
     }
 
-    // ── Conexión WebRTC ───────────────────────────────────────────────────────
+    //  Conexión WebRTC
     // initWebRTC monta toda la tubería WebRTC:
     //   1. Crear RTCPeerConnection con la config ICE
     //   2. Añadir transceivers en modo recvonly (solo recibimos, no enviamos)
@@ -69,7 +73,7 @@
         pc.oniceconnectionstatechange = () => console.log("ICE state:", pc.iceConnectionState);
         pc.onconnectionstatechange = () => console.log("Peer state:", pc.connectionState);
 
-        // Los transceivers hay que añadirlos ANTES de crear la offer para que el SDP
+        // Los transceivers hay que añadirlos ANTES! de crear la offer para que el SDP
         // incluya las secciones de vídeo y audio. Sin ellos el servidor no tiene tracks
         // a los que engancharse y devuelve una answer vacía.
         pc.addTransceiver("video", { direction: "recvonly" });
@@ -87,7 +91,7 @@
             if (!videoEl.srcObject) videoEl.srcObject = event.streams[0];
         };
 
-        // ── DataChannel de latencia ───────────────────────────────────────────
+        // DataChannel de latencia
         // Canal ligero para medir el RTT (round-trip time) de forma independiente
         // a la calidad del stream de vídeo.
         // Protocolo:
@@ -114,7 +118,23 @@
             } catch (e) { console.error("Error parsing pong:", e); }
         };
 
-        // ── Handshake SDP Offer/Answer ────────────────────────────────────────
+        // QoE: arrancar la medición JUSTO antes de negociar (fija t0 del startup)
+        // Mismo qoe-meter.js que el Proyecto 1. En WebRTC se le pasa 'pc' para leer
+        // freezeCount de getStats. Metadatos del escenario por query params en la URL:
+        //   ?escenario=E2&parametro=N=10&rep=1     (sistema por defecto: P2)
+        // El script es opcional: si no cargó, el player sigue funcionando igual.
+        if (window.QoE) {
+            const qp = new URLSearchParams(location.search);
+            QoE.attach(videoEl, pc);
+            QoE.start({
+                sistema:    qp.get('sistema')   || 'P2',
+                escenario:  qp.get('escenario') || '',
+                parametro:  qp.get('parametro') || '',
+                repeticion: qp.get('rep')       || ''
+            });
+        }
+
+        // Handshake SDP Offer/Answer
         // La señalización WebRTC usa SDP (Session Description Protocol):
         //   1. El navegador genera una offer describiendo sus capacidades
         //   2. La offer se envía al servidor por HTTP POST
@@ -123,8 +143,10 @@
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // IP del host hardcodeada; la alternativa con proxy inverso es POST /offer vía nginx
-        const resp = await fetch("http://192.168.1.45:8081/offer", {
+        // POST /offer relativo: va al mismo origen → nginx hace de proxy inverso a
+        // video-streamer:8081. Así no hay IP hardcodeada y todo (página, offer, métricas,
+        // hls) comparte origen, así que basta con port-forward del hls-web.
+        const resp = await fetch("/offer", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(pc.localDescription)

@@ -230,3 +230,5 @@ docker exec -it video-streamer apt-get update && apt install alsa-utils
 # Crear red manualmente si no se crea automáticamente
 docker network create -d bridge monitoring_network
 ```
+entrar en un pod
+kubectl exec -it -n streaming video-streamer-75fc69c865-zvn5j -- /bin/bash

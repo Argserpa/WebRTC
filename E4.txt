@@ -1,0 +1,8 @@
+kubectl top pod -n streaming
+NAME                              CPU(cores)   MEMORY(bytes)
+coturn-78b757b795-vgdc5           1m           38Mi
+grafana-55fdf5b9f9-zxbqx          6m           636Mi
+hls-web-68bbf5c8db-mjbpj          0m           8Mi
+node-exporter-k5f69               4m           9Mi
+prometheus-7755dcb9f6-h96n5       1m           34Mi
+video-streamer-85bb4694bf-49nzk   432m         570Mi

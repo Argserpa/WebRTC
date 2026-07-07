@@ -67,11 +67,16 @@ spec:
               mountPath: /var/lib/grafana   # dashboards y config persistentes
           resources:
             requests:
-              cpu: "100m"
-              memory: "128Mi"
+              cpu: "150m"
+              memory: "512Mi"
             limits:
-              cpu: "300m"
-              memory: "256Mi"
+              # El working set de grafana/grafana:latest supera 512Mi una vez caliente
+              # (se comprobó: OOMKilled a los ~73s con 256Mi y de nuevo a los ~171s con 512Mi,
+              # exit 137, sin panic interno → era el límite del cgroup, no un fallo de Grafana).
+              # El nodo tiene 52Gi libres, así que damos 1Gi de techo (muy por encima de los
+              # ~550-600Mi reales) para eliminar el CrashLoopBackOff y el "NetworkError" del navegador.
+              cpu: "500m"
+              memory: "1Gi"
       volumes:
         - name: data
           persistentVolumeClaim:

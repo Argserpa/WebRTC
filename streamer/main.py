@@ -33,7 +33,8 @@ import logging
 from FFmpegMetrics import (
     monitor_ffmpeg_stream,
     webrtc_peers, webrtc_offers, webrtc_errors,
-    ffmpeg_running, latency_tracker, metrics
+    ffmpeg_running, latency_tracker, metrics,
+    PrometheusExporter, SegmentBitrateSampler
 )
 
 logging.basicConfig(
@@ -154,6 +155,10 @@ async def ffmpeg_runner():
                 monitor_ffmpeg_stream(process, stream_id)
             )
 
+            # Muestreador de bitrate: el muxer tee no reporta bitrate en las stats, así que
+            # lo calculamos del crecimiento del fichero .ts de grabación en cada tick de 1 s.
+            bitrate_sampler = SegmentBitrateSampler(RECORD_DIR, PrometheusExporter(stream_id))
+
             # Bucle de vigilancia: comprueba cada segundo si FFmpeg salió o si cambió el día
             while True:
                 if process.returncode is not None:
@@ -168,6 +173,7 @@ async def ffmpeg_runner():
                         process.kill()   # forzar si el terminate no termina en 5 s
                         await process.wait()
                     break
+                bitrate_sampler.sample()   # actualiza TFG_streaming_bitrate / TFG_ffmpeg_bitrate_kbits
                 await asyncio.sleep(1)
 
             # Cancelar la tarea de métricas limpiamente
@@ -196,6 +202,21 @@ async def ffmpeg_runner():
 pcs = set()
 player = None
 relay = None
+
+
+def update_peer_count():
+    """
+    Fija TFG_webrtc_peers al número de conexiones REALMENTE activas (estado
+    'connected'), recalculándolo desde el conjunto pcs en cada cambio.
+
+    Antes se usaba inc()/dec() manual: +1 en cada /offer y -1 solo al llegar a un
+    estado terminal. Pero un mismo visor genera varias offers (reintentos/recargas)
+    y las PCs que se quedan atascadas en 'connecting' nunca disparan un estado
+    terminal, así que su inc() no se deshacía y la métrica se inflaba (marcaba 5
+    con 2 visores). Derivar el valor del estado real es a prueba de desincronización:
+    cuenta solo peers conectados y nunca puede quedar descuadrado.
+    """
+    webrtc_peers.set(sum(1 for p in pcs if p.connectionState == "connected"))
 
 # Configuración ICE — tiene que coincidir con la config iceServers de index.html
 config = RTCConfiguration(
@@ -234,21 +255,23 @@ async def offer(request):
     pc = RTCPeerConnection(configuration=config)
     pcs.add(pc)
     webrtc_offers.inc()
-    webrtc_peers.inc()
+    # OJO: no se cuenta el peer aquí. La PC acaba de nacer (estado 'new'/'connecting')
+    # y todavía no es un visor activo; se contará al pasar a 'connected'.
 
     logging.info("New PeerConnection (total peers: %s)", len(pcs))
 
     @pc.on("connectionstatechange")
     async def on_state_change():
-        """Limpia la conexión cuando falla, se cierra o se desconecta."""
+        """Actualiza la cuenta de peers y limpia la conexión al fallar/cerrarse."""
         logging.info("Connection state: %s", pc.connectionState)
         if pc.connectionState in ("failed", "closed", "disconnected"):
-            if webrtc_peers._value.get() > 0:
-                webrtc_peers.dec()
             if pc.connectionState == "failed":
                 webrtc_errors.inc()
             await pc.close()
             pcs.discard(pc)
+        # Recalcular SIEMPRE: cubre tanto la subida a 'connected' (+1) como la
+        # bajada por cierre/fallo (-1), y corrige cualquier descuadre previo.
+        update_peer_count()
 
     @pc.on("datachannel")
     def on_datachannel(channel):
@@ -286,9 +309,8 @@ async def offer(request):
     except Exception as e:
         logging.error("Error during WebRTC negotiation: %s", e)
         webrtc_errors.inc()
-        if webrtc_peers._value.get() > 0:
-            webrtc_peers.dec()
         pcs.discard(pc)
+        update_peer_count()   # la PC fallida nunca llegó a 'connected', recomputar
         return web.json_response({"error": str(e)}, status=500)
 
     return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
@@ -298,6 +320,7 @@ async def on_shutdown(app):
     """Cierra todas las conexiones peer limpiamente al apagar el servidor."""
     await asyncio.gather(*[pc.close() for pc in pcs])
     pcs.clear()
+    update_peer_count()   # sin conexiones → gauge a 0
     logging.info("All peer connections closed")
 
 

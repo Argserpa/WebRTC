@@ -71,6 +71,12 @@ metadata:
     app: video-streamer
 spec:
   replicas: 1   # No escalar — las conexiones WebRTC están ligadas a la instancia de MediaRelay de este pod
+  # Recreate (no RollingUpdate): este pod usa hostNetwork y ocupa el puerto de host 8081,
+  # además de abrir en exclusiva la cámara /dev/video0. Con RollingUpdate el pod nuevo intenta
+  # arrancar antes de matar el viejo y nunca puede: "didn't have free ports" (deadlock).
+  # Recreate mata el pod viejo primero y luego crea el nuevo — es lo único viable aquí.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: video-streamer
@@ -110,8 +116,8 @@ spec:
               cpu: "500m"
               memory: "512Mi"
             limits:
-              cpu: "2000m"   # la codificación FFmpeg es intensiva en CPU; permitir hasta 2 cores
-              memory: "1Gi"
+              cpu: "4000m"   # 2000m→4000m: a N=25 el SRTP de los 25 flujos saturaba 2 cores (1924m), throttling → el relay se atasca y dispara memoria + tumba el liveness. Nodo=32 cores.
+              memory: "8Gi"   # holgado: 25 peers en estado estable ≈ 2.9Gi. El margen absorbe picos transitorios del relay.
           # Liveness probe: si /metrics deja de responder, reiniciar el pod
           livenessProbe:
             httpGet:
@@ -119,6 +125,8 @@ spec:
               port: 8081
             initialDelaySeconds: 15   # esperar a que FFmpeg arranque antes del primer chequeo
             periodSeconds: 30
+            timeoutSeconds: 5         # bajo carga alta el event loop tarda en responder; 1s (default) mataba el pod en falso
+            failureThreshold: 3       # 3 fallos seguidos antes de reiniciar (evita reinicios por picos puntuales)
       volumes:
         - name: hls-data
           persistentVolumeClaim:

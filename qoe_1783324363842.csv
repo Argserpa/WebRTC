@@ -1,0 +1,2 @@
+timestamp,sistema,escenario,parametro,repeticion,startup_ms,stalls_count,duracion_s,stalls_per_min,fuente_stalls
+2026-07-06T07:52:41.560Z,P2,E4,N=10,1,5590.6,48,2695.7,1.07,freezeCount

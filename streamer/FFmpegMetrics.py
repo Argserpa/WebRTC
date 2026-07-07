@@ -6,7 +6,9 @@
 #   4. Gestionar el separador de línea \r que usa FFmpeg en su salida de stats
 #   5. Exponer las métricas en el endpoint /metrics
 # ──────────────────────────────────────────────────────────────────────────────
+import os
 import re
+import glob
 import logging
 import time
 from typing import Optional
@@ -172,6 +174,79 @@ class PrometheusExporter:
         ffmpeg_speed.labels(stream_id=self.stream_id).set(value)
 
 
+class SegmentBitrateSampler:
+    """
+    Calcula el bitrate REAL del stream a partir del crecimiento del fichero de
+    segmento .ts que FFmpeg está grabando en ese momento.
+
+    ¿Por qué no sale de las stats de FFmpeg? Porque el pipeline usa el muxer `tee`
+    (una salida UDP + otra de segmentos), y `tee` imprime `bitrate=N/A` en la línea
+    de -stats, así que el parser de stderr nunca puede leerlo. El fichero de segmento
+    contiene exactamente el mismo MPEG-TS (vídeo H.264 + audio AAC) que se envía por
+    UDP al peer WebRTC, de modo que su ritmo de crecimiento en bytes/s ES el bitrate
+    real entregado (incluida la sobrecarga del contenedor TS). Esta es la cifra que
+    tiene sentido comparar con otros proyectos de streaming.
+
+    Uso: llamar a sample() de forma periódica (el bucle de vigilancia de main.py ya
+    corre cada segundo). El valor se suaviza con una media móvil exponencial (EMA)
+    para que el panel de Grafana no oscile por el buffering de escritura.
+    """
+    def __init__(self, record_dir: str, exporter: PrometheusExporter, ema_alpha: float = 0.3):
+        self._record_dir = record_dir
+        self._exporter = exporter
+        self._alpha = ema_alpha
+        self._last_path: Optional[str] = None
+        self._last_size: int = 0
+        self._last_time: float = 0.0
+        self._ema_kbps: Optional[float] = None
+
+    def _current_segment(self) -> Optional[str]:
+        """Devuelve el .ts que está creciendo ahora (el de mtime más reciente)."""
+        # Glob {record_dir}/{fecha}/*.ts — un nivel de directorio de día, sin recorrer
+        # todo el histórico. Cubre el cambio de día de forma natural (coge el más nuevo).
+        candidates = glob.glob(os.path.join(self._record_dir, "*", "*.ts"))
+        if not candidates:
+            return None
+        return max(candidates, key=os.path.getmtime)
+
+    def sample(self) -> None:
+        """Toma una muestra del tamaño del segmento actual y actualiza el bitrate."""
+        try:
+            path = self._current_segment()
+            if path is None:
+                return
+            size = os.path.getsize(path)
+            now = time.monotonic()
+
+            # Segmento nuevo (rotación) o primera muestra: fijar línea base y no emitir
+            # bitrate en este tick (aún no hay delta fiable contra el que comparar).
+            if path != self._last_path or size < self._last_size:
+                self._last_path, self._last_size, self._last_time = path, size, now
+                return
+
+            dt = now - self._last_time
+            if dt <= 0:
+                return
+
+            # bytes → kbit/s:  Δbytes * 8 bits / dt segundos / 1000
+            kbps = (size - self._last_size) * 8.0 / dt / 1000.0
+
+            # Suavizado EMA para una lectura estable pero reactiva
+            if self._ema_kbps is None:
+                self._ema_kbps = kbps
+            else:
+                self._ema_kbps = self._alpha * kbps + (1 - self._alpha) * self._ema_kbps
+
+            self._exporter.set_bitrate(self._ema_kbps)
+            self._last_path, self._last_size, self._last_time = path, size, now
+
+        except FileNotFoundError:
+            # El segmento rotó/expiró entre el glob y el stat: se reintenta en la próxima muestra
+            pass
+        except Exception as e:
+            logging.debug("SegmentBitrateSampler: error muestreando bitrate: %s", e)
+
+
 async def metrics(request):
     """
     GET /metrics — endpoint de scraping para Prometheus.
@@ -261,8 +336,9 @@ async def monitor_ffmpeg_process(process, metrics_exporter):
             parse_ffmpeg_output(line_str, ffmpeg_metrics)
 
             # Solo exportar los campos que ya se han parseado (None = aún no aparecieron)
-            if ffmpeg_metrics.bitrate is not None:
-                metrics_exporter.set_bitrate(ffmpeg_metrics.bitrate)
+            # OJO: el bitrate NO se saca de aquí. El muxer `tee` imprime `bitrate=N/A`
+            # en la línea de -stats, así que este parser nunca lo obtiene. El bitrate real
+            # lo calcula SegmentBitrateSampler a partir del crecimiento del fichero .ts.
             if ffmpeg_metrics.fps is not None:
                 metrics_exporter.set_fps(ffmpeg_metrics.fps)
             if ffmpeg_metrics.speed is not None:
