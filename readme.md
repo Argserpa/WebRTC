@@ -44,7 +44,7 @@ Cámara V4L2 + Audio ALSA
 
 Este proyecto tiene dos modos de despliegue con comportamientos distintos. **Elige uno según tu caso de uso:**
 
-### Docker Compose — acceso desde la LAN ✅
+### Docker Compose — acceso desde la LAN
 
 El modo recomendado para streaming en red local.  
 El streamer usa `network_mode: host`, lo que le da la IP real del host → aiortc genera ICE candidates alcanzables por cualquier dispositivo de la LAN.
@@ -57,7 +57,7 @@ Dispositivo LAN → 192.168.x.x:8080 (nginx) → proxy → localhost:8081 (strea
 
 ---
 
-### Kubernetes / Minikube — solo localhost ⚠️
+### Kubernetes / Minikube — solo localhost
 
 El modo para desarrollo y pruebas en la propia máquina.  
 Con el driver `docker` de Minikube, el nodo vive en una red interna Docker (`192.168.49.x`) que **no es enrutable desde otros dispositivos de la LAN**. El acceso se hace vía `kubectl port-forward` o `minikube tunnel`, ambos limitados al `localhost` del host.
